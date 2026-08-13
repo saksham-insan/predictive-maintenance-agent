@@ -1,0 +1,273 @@
+"""
+Failure Prediction Module for Predictive Maintenance Agent.
+
+Trains a baseline Random Forest Classifier on the AI4I 2020 Predictive Maintenance Dataset
+to predict machine failures based on sensor features.
+"""
+
+import os
+import sys
+import joblib
+import numpy as np
+import pandas as pd
+from typing import Tuple, Dict, Any, Optional
+from sklearn.model_selection import train_test_split
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import (
+    accuracy_score,
+    precision_score,
+    recall_score,
+    f1_score,
+    roc_auc_score,
+    classification_report,
+    confusion_matrix
+)
+
+# Default path locations
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DEFAULT_DATA_PATH = os.path.join(PROJECT_ROOT, "data", "raw", "ai4i2020.csv")
+DEFAULT_MODEL_PATH = os.path.join(PROJECT_ROOT, "models", "baseline_model.pkl")
+
+# Type mapping for ordinal encoding
+TYPE_MAPPING = {'L': 0, 'M': 1, 'H': 2}
+
+# Feature definitions
+FEATURE_COLUMNS = [
+    'Type_Encoded',
+    'Air temperature',
+    'Process temperature',
+    'Rotational speed',
+    'Torque',
+    'Tool wear',
+    'Temp_Diff',
+    'Power'
+]
+TARGET_COLUMN = 'Machine failure'
+
+
+def load_data(filepath: str = DEFAULT_DATA_PATH) -> pd.DataFrame:
+    """
+    Load the AI4I 2020 predictive maintenance dataset from a CSV file.
+
+    Args:
+        filepath (str): Path to the CSV dataset file.
+
+    Returns:
+        pd.DataFrame: Loaded dataset.
+    """
+    if not os.path.exists(filepath):
+        raise FileNotFoundError(
+            f"Dataset not found at '{filepath}'. Please ensure 'ai4i2020.csv' is in 'data/raw/'."
+        )
+    df = pd.read_csv(filepath)
+    print(f"[INFO] Loaded dataset from '{filepath}' with shape {df.shape}.")
+    return df
+
+
+def preprocess_data(
+    df: pd.DataFrame
+) -> Tuple[pd.DataFrame, pd.Series, pd.DataFrame]:
+    """
+    Clean and engineer features for failure prediction.
+
+    Args:
+        df (pd.DataFrame): Raw AI4I dataframe.
+
+    Returns:
+        Tuple[pd.DataFrame, pd.Series, pd.DataFrame]: (X, y, df_processed)
+    """
+    data = df.copy()
+
+    # Encode categorical 'Type' feature: L (Low) -> 0, M (Medium) -> 1, H (High) -> 2
+    if 'Type' in data.columns and 'Type_Encoded' not in data.columns:
+        data['Type_Encoded'] = data['Type'].map(TYPE_MAPPING).fillna(0).astype(int)
+
+    # Standardize column naming if units were present in headers
+    rename_cols = {
+        'Air temperature [K]': 'Air temperature',
+        'Process temperature [K]': 'Process temperature',
+        'Rotational speed [rpm]': 'Rotational speed',
+        'Torque [Nm]': 'Torque',
+        'Tool wear [min]': 'Tool wear'
+    }
+    data = data.rename(columns=rename_cols)
+
+    # Feature Engineering
+    if 'Process temperature' in data.columns and 'Air temperature' in data.columns:
+        data['Temp_Diff'] = data['Process temperature'] - data['Air temperature']
+    
+    if 'Rotational speed' in data.columns and 'Torque' in data.columns:
+        data['Power'] = data['Rotational speed'] * data['Torque']
+
+    # Validate feature columns existence
+    missing_features = [col for col in FEATURE_COLUMNS if col not in data.columns]
+    if missing_features:
+        raise ValueError(f"Missing required feature columns in dataset: {missing_features}")
+
+    X = data[FEATURE_COLUMNS]
+
+    if TARGET_COLUMN in data.columns:
+        y = data[TARGET_COLUMN]
+    else:
+        y = None
+
+    return X, y, data
+
+
+def train_baseline_model(
+    X_train: pd.DataFrame,
+    y_train: pd.Series,
+    n_estimators: int = 100,
+    random_state: int = 42
+) -> RandomForestClassifier:
+    """
+    Train a Random Forest Classifier baseline model.
+
+    Args:
+        X_train (pd.DataFrame): Training feature matrix.
+        y_train (pd.Series): Training target labels.
+        n_estimators (int): Number of trees in the forest.
+        random_state (int): Random seed for reproducibility.
+
+    Returns:
+        RandomForestClassifier: Trained Random Forest model.
+    """
+    print(f"[INFO] Training Random Forest model (n_estimators={n_estimators}, random_state={random_state})...")
+    model = RandomForestClassifier(
+        n_estimators=n_estimators,
+        random_state=random_state,
+        n_jobs=-1
+    )
+    model.fit(X_train, y_train)
+    print("[INFO] Model training completed successfully.")
+    return model
+
+
+def evaluate_model(
+    model: RandomForestClassifier,
+    X_test: pd.DataFrame,
+    y_test: pd.Series
+) -> Dict[str, Any]:
+    """
+    Evaluate the model on test data and print performance metrics.
+
+    Args:
+        model: Trained classifier model.
+        X_test (pd.DataFrame): Test feature matrix.
+        y_test (pd.Series): Test target labels.
+
+    Returns:
+        Dict[str, Any]: Dictionary containing metric values.
+    """
+    y_pred = model.predict(X_test)
+    y_prob = model.predict_proba(X_test)[:, 1] if hasattr(model, "predict_proba") else None
+
+    accuracy = accuracy_score(y_test, y_pred)
+    precision = precision_score(y_test, y_pred, zero_division=0)
+    recall = recall_score(y_test, y_pred, zero_division=0)
+    f1 = f1_score(y_test, y_pred, zero_division=0)
+    roc_auc = roc_auc_score(y_test, y_prob) if y_prob is not None else None
+    cm = confusion_matrix(y_test, y_pred)
+    report = classification_report(y_test, y_pred)
+
+    print("\n" + "=" * 50)
+    print("       MODEL EVALUATION METRICS (TEST SET)       ")
+    print("=" * 50)
+    print(f"Accuracy:  {accuracy:.4f} ({accuracy * 100:.2f}%)")
+    print(f"Precision: {precision:.4f} ({precision * 100:.2f}%)")
+    print(f"Recall:    {recall:.4f} ({recall * 100:.2f}%)")
+    print(f"F1-Score:  {f1:.4f} ({f1 * 100:.2f}%)")
+    if roc_auc is not None:
+        print(f"ROC-AUC:   {roc_auc:.4f} ({roc_auc * 100:.2f}%)")
+    print("\nConfusion Matrix:")
+    print(f"TN: {cm[0,0]:<5} | FP: {cm[0,1]:<5}")
+    print(f"FN: {cm[1,0]:<5} | TP: {cm[1,1]:<5}")
+    print("\nClassification Report:")
+    print(report)
+    print("=" * 50 + "\n")
+
+    return {
+        "accuracy": accuracy,
+        "precision": precision,
+        "recall": recall,
+        "f1_score": f1,
+        "roc_auc": roc_auc,
+        "confusion_matrix": cm,
+        "classification_report": report
+    }
+
+
+def save_model(
+    model: Any,
+    filepath: str = DEFAULT_MODEL_PATH,
+    feature_names: Optional[list] = None
+) -> None:
+    """
+    Save the trained model and metadata to disk.
+
+    Args:
+        model: Trained model object.
+        filepath (str): Target file path for the .pkl file.
+        feature_names (list, optional): List of feature names used during training.
+    """
+    os.makedirs(os.path.dirname(filepath), exist_ok=True)
+    
+    # Save model artifact
+    joblib.dump(model, filepath)
+    print(f"[INFO] Model successfully saved to '{filepath}'.")
+
+
+def run_pipeline(
+    data_path: str = DEFAULT_DATA_PATH,
+    model_save_path: str = DEFAULT_MODEL_PATH,
+    test_size: float = 0.2,
+    random_state: int = 42
+) -> Dict[str, Any]:
+    """
+    Execute the end-to-end failure prediction training and evaluation pipeline.
+
+    Args:
+        data_path (str): Path to raw CSV file.
+        model_save_path (str): Path to save trained model .pkl.
+        test_size (float): Proportion of dataset to include in test split.
+        random_state (int): Seed for train/test split and model training.
+
+    Returns:
+        Dict[str, Any]: Pipeline outputs including model and metrics.
+    """
+    # 1. Load Data
+    df = load_data(data_path)
+
+    # 2. Preprocess & Feature Engineering
+    X, y, _ = preprocess_data(df)
+
+    if y is None:
+        raise ValueError("Target variable 'Machine failure' not found in dataset.")
+
+    # 3. Train-Test Split (Stratified to handle class imbalance)
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y,
+        test_size=test_size,
+        random_state=random_state,
+        stratify=y
+    )
+    print(f"[INFO] Dataset split: Train size = {X_train.shape[0]}, Test size = {X_test.shape[0]}.")
+
+    # 4. Train Model
+    model = train_baseline_model(X_train, y_train, random_state=random_state)
+
+    # 5. Evaluate Model
+    metrics = evaluate_model(model, X_test, y_test)
+
+    # 6. Save Model
+    save_model(model, model_save_path, feature_names=FEATURE_COLUMNS)
+
+    return {
+        "model": model,
+        "metrics": metrics,
+        "feature_names": FEATURE_COLUMNS
+    }
+
+
+if __name__ == "__main__":
+    run_pipeline()
