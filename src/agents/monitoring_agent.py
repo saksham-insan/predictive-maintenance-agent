@@ -1,10 +1,14 @@
-import random
+import joblib
+import os
+import sys
+
+sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+from anomaly_detection import is_anomalous, DEFAULT_MODEL_PATH
+
+model = joblib.load(DEFAULT_MODEL_PATH)
 
 def monitoring_agent(row: dict) -> bool:
     """
-    Checks if a sensor row looks anomalous.
-    PLACEHOLDER: returns random True/False for now.
-    Replace this with Person 1's real Isolation Forest check once ready.
+    Checks if a sensor row looks anomalous using the trained Isolation Forest.
     """
-    # TODO: replace with real anomaly_detection.py function
-    return random.random() < 0.15  # ~15% of rows flagged, roughly mimics real failure rate
+    return is_anomalous(model, row)
