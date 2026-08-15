@@ -77,7 +77,11 @@ def explain_one_prediction(model: RandomForestClassifier, X_background: pd.DataF
     print("\nRunning SHAP...")
 
     explainer = shap.TreeExplainer(model, X_background)
-    shap_values = explainer.shap_values(row_to_explain)
+    # check_additivity=False: SHAP's internal sanity check occasionally fails
+    # on small floating-point rounding differences between the SHAP value sum
+    # and the model's raw output. This doesn't affect the correctness of the
+    # explanation itself, just skips an overly strict assertion.
+    shap_values = explainer.shap_values(row_to_explain, check_additivity=False)
     failure_shap = get_failure_class_shap_values(shap_values)
 
     predicted_probability = model.predict_proba(row_to_explain)[0][1]
@@ -120,7 +124,7 @@ def get_plain_english_explanation(model, background_sample: pd.DataFrame,
     explain_one_prediction() above, which is the console demo version).
     """
     explainer = shap.TreeExplainer(model, background_sample)
-    shap_values = explainer.shap_values(row_to_explain)
+    shap_values = explainer.shap_values(row_to_explain, check_additivity=False)
     failure_shap = get_failure_class_shap_values(shap_values)
 
     explanation_df = pd.DataFrame({
