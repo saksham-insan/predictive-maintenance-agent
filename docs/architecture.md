@@ -46,3 +46,13 @@ Compared Random Forest (chosen) against XGBoost on the same train/test split:
 XGBoost had a slightly better ROC-AUC (better class separation overall) but 
 Random Forest gave a better F1 at our chosen operating threshold — kept 
 Random Forest as the production model.
+## Hyperparameter Tuning
+Ran GridSearchCV (81 combinations, 5-fold CV) on Random Forest hyperparameters.
+Best found: max_depth=None, min_samples_leaf=4, min_samples_split=2, n_estimators=200
+— cross-validated F1=0.826, but on the held-out test set (default threshold):
+precision=84.9%, recall=82.4%, F1=0.836.
+
+This did NOT beat our original model combined with the tuned 0.4 classification
+threshold (precision=91.8%, recall=82.4%, F1=0.868). Kept the original model —
+threshold tuning provided a bigger, cheaper improvement than hyperparameter
+search in this case.

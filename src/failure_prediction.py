@@ -11,7 +11,7 @@ import joblib
 import numpy as np
 import pandas as pd
 from typing import Tuple, Dict, Any, Optional
-from sklearn.model_selection import train_test_split, StratifiedKFold, cross_validate
+from sklearn.model_selection import train_test_split, StratifiedKFold, cross_validate, GridSearchCV
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import (
     accuracy_score,
@@ -264,6 +264,45 @@ def compare_with_xgboost(X_train: pd.DataFrame, y_train: pd.Series,
     }
 
 
+def tune_hyperparameters(X_train: pd.DataFrame, y_train: pd.Series) -> RandomForestClassifier:
+    """
+    Searches over a grid of Random Forest hyperparameters using cross-validation
+    to find the combination that maximizes F1 score (balances precision and recall).
+    """
+    param_grid = {
+        'n_estimators': [100, 200, 300],
+        'max_depth': [None, 10, 20],
+        'min_samples_split': [2, 5, 10],
+        'min_samples_leaf': [1, 2, 4]
+    }
+
+    base_model = RandomForestClassifier(
+        random_state=42,
+        class_weight='balanced',
+        n_jobs=-1
+    )
+
+    print("\n[INFO] Starting hyperparameter search (this will take a few minutes)...")
+    grid_search = GridSearchCV(
+        estimator=base_model,
+        param_grid=param_grid,
+        scoring='f1',
+        cv=5,
+        n_jobs=-1,
+        verbose=1
+    )
+    grid_search.fit(X_train, y_train)
+
+    print("\n" + "=" * 55)
+    print("  HYPERPARAMETER TUNING RESULTS")
+    print("=" * 55)
+    print(f"Best parameters: {grid_search.best_params_}")
+    print(f"Best cross-validated F1 score: {grid_search.best_score_:.4f}")
+    print("=" * 55 + "\n")
+
+    return grid_search.best_estimator_
+
+
 def save_model(
     model: Any,
     filepath: str = DEFAULT_MODEL_PATH,
@@ -326,6 +365,11 @@ if __name__ == "__main__":
         result["X_train"], result["y_train"],
         result["X_test"], result["y_test"]
     )
+
+    # Hyperparameter tuning — searches for better Random Forest settings
+    best_model = tune_hyperparameters(result["X_train"], result["y_train"])
+    print("[INFO] Evaluating tuned model on test set:")
+    evaluate_model(best_model, result["X_test"], result["y_test"])
 
     # Cross-validation comparison (SMOTE vs class_weight, tested earlier)
     df = load_data()
