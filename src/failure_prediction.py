@@ -11,7 +11,7 @@ import joblib
 import numpy as np
 import pandas as pd
 from typing import Tuple, Dict, Any, Optional
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, StratifiedKFold, cross_validate
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import (
     accuracy_score,
@@ -22,6 +22,8 @@ from sklearn.metrics import (
     classification_report,
     confusion_matrix
 )
+from imblearn.over_sampling import SMOTE
+from imblearn.pipeline import Pipeline as ImbPipeline
 
 # Default path locations
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -48,12 +50,6 @@ TARGET_COLUMN = 'Machine failure'
 def load_data(filepath: str = DEFAULT_DATA_PATH) -> pd.DataFrame:
     """
     Load the AI4I 2020 predictive maintenance dataset from a CSV file.
-
-    Args:
-        filepath (str): Path to the CSV dataset file.
-
-    Returns:
-        pd.DataFrame: Loaded dataset.
     """
     if not os.path.exists(filepath):
         raise FileNotFoundError(
@@ -69,20 +65,12 @@ def preprocess_data(
 ) -> Tuple[pd.DataFrame, pd.Series, pd.DataFrame]:
     """
     Clean and engineer features for failure prediction.
-
-    Args:
-        df (pd.DataFrame): Raw AI4I dataframe.
-
-    Returns:
-        Tuple[pd.DataFrame, pd.Series, pd.DataFrame]: (X, y, df_processed)
     """
     data = df.copy()
 
-    # Encode categorical 'Type' feature: L (Low) -> 0, M (Medium) -> 1, H (High) -> 2
     if 'Type' in data.columns and 'Type_Encoded' not in data.columns:
         data['Type_Encoded'] = data['Type'].map(TYPE_MAPPING).fillna(0).astype(int)
 
-    # Standardize column naming if units were present in headers
     rename_cols = {
         'Air temperature [K]': 'Air temperature',
         'Process temperature [K]': 'Process temperature',
@@ -92,14 +80,12 @@ def preprocess_data(
     }
     data = data.rename(columns=rename_cols)
 
-    # Feature Engineering
     if 'Process temperature' in data.columns and 'Air temperature' in data.columns:
         data['Temp_Diff'] = data['Process temperature'] - data['Air temperature']
-    
+
     if 'Rotational speed' in data.columns and 'Torque' in data.columns:
         data['Power'] = data['Rotational speed'] * data['Torque']
 
-    # Validate feature columns existence
     missing_features = [col for col in FEATURE_COLUMNS if col not in data.columns]
     if missing_features:
         raise ValueError(f"Missing required feature columns in dataset: {missing_features}")
@@ -122,15 +108,6 @@ def train_baseline_model(
 ) -> RandomForestClassifier:
     """
     Train a Random Forest Classifier baseline model.
-
-    Args:
-        X_train (pd.DataFrame): Training feature matrix.
-        y_train (pd.Series): Training target labels.
-        n_estimators (int): Number of trees in the forest.
-        random_state (int): Random seed for reproducibility.
-
-    Returns:
-        RandomForestClassifier: Trained Random Forest model.
     """
     print(f"[INFO] Training Random Forest model (n_estimators={n_estimators}, random_state={random_state})...")
     model = RandomForestClassifier(
@@ -150,14 +127,6 @@ def evaluate_model(
 ) -> Dict[str, Any]:
     """
     Evaluate the model on test data and print performance metrics.
-
-    Args:
-        model: Trained classifier model.
-        X_test (pd.DataFrame): Test feature matrix.
-        y_test (pd.Series): Test target labels.
-
-    Returns:
-        Dict[str, Any]: Dictionary containing metric values.
     """
     y_pred = model.predict(X_test)
     y_prob = model.predict_proba(X_test)[:, 1] if hasattr(model, "predict_proba") else None
@@ -197,6 +166,34 @@ def evaluate_model(
     }
 
 
+def evaluate_with_cross_validation(X: pd.DataFrame, y: pd.Series, n_splits: int = 5) -> Dict[str, Any]:
+    """
+    More rigorous evaluation than a single train/test split.
+    Uses stratified k-fold so each fold preserves the rare failure class ratio,
+    and applies SMOTE inside each fold (never on the full dataset beforehand —
+    that would leak synthetic samples derived from test data into training).
+    """
+    skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
+
+    pipeline = ImbPipeline([
+        ('smote', SMOTE(random_state=42)),
+        ('model', RandomForestClassifier(n_estimators=100, random_state=42, n_jobs=-1))
+    ])
+
+    scoring = ['accuracy', 'precision', 'recall', 'f1', 'roc_auc']
+    results = cross_validate(pipeline, X, y, cv=skf, scoring=scoring, n_jobs=-1)
+
+    print("\n" + "=" * 55)
+    print(f"  {n_splits}-FOLD CROSS-VALIDATION RESULTS (with SMOTE)")
+    print("=" * 55)
+    for metric in scoring:
+        scores = results[f'test_{metric}']
+        print(f"{metric.capitalize():12s}: {scores.mean():.4f} (+/- {scores.std():.4f})")
+    print("=" * 55 + "\n")
+
+    return results
+
+
 def save_model(
     model: Any,
     filepath: str = DEFAULT_MODEL_PATH,
@@ -204,15 +201,8 @@ def save_model(
 ) -> None:
     """
     Save the trained model and metadata to disk.
-
-    Args:
-        model: Trained model object.
-        filepath (str): Target file path for the .pkl file.
-        feature_names (list, optional): List of feature names used during training.
     """
     os.makedirs(os.path.dirname(filepath), exist_ok=True)
-    
-    # Save model artifact
     joblib.dump(model, filepath)
     print(f"[INFO] Model successfully saved to '{filepath}'.")
 
@@ -225,26 +215,13 @@ def run_pipeline(
 ) -> Dict[str, Any]:
     """
     Execute the end-to-end failure prediction training and evaluation pipeline.
-
-    Args:
-        data_path (str): Path to raw CSV file.
-        model_save_path (str): Path to save trained model .pkl.
-        test_size (float): Proportion of dataset to include in test split.
-        random_state (int): Seed for train/test split and model training.
-
-    Returns:
-        Dict[str, Any]: Pipeline outputs including model and metrics.
     """
-    # 1. Load Data
     df = load_data(data_path)
-
-    # 2. Preprocess & Feature Engineering
     X, y, _ = preprocess_data(df)
 
     if y is None:
         raise ValueError("Target variable 'Machine failure' not found in dataset.")
 
-    # 3. Train-Test Split (Stratified to handle class imbalance)
     X_train, X_test, y_train, y_test = train_test_split(
         X, y,
         test_size=test_size,
@@ -253,13 +230,8 @@ def run_pipeline(
     )
     print(f"[INFO] Dataset split: Train size = {X_train.shape[0]}, Test size = {X_test.shape[0]}.")
 
-    # 4. Train Model
     model = train_baseline_model(X_train, y_train, random_state=random_state)
-
-    # 5. Evaluate Model
     metrics = evaluate_model(model, X_test, y_test)
-
-    # 6. Save Model
     save_model(model, model_save_path, feature_names=FEATURE_COLUMNS)
 
     return {
@@ -270,4 +242,10 @@ def run_pipeline(
 
 
 if __name__ == "__main__":
+    # Run the normal pipeline (single split, saves the model used by the rest of the app)
     run_pipeline()
+
+    # Also run cross-validation for a more robust, defensible performance estimate
+    df = load_data()
+    X, y, _ = preprocess_data(df)
+    evaluate_with_cross_validation(X, y)

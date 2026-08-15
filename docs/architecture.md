@@ -25,3 +25,9 @@ Contamination tuned via failure-recall analysis (tested 0.05 to 0.25):
 Chose 0.15 to balance catching real failures against flooding the system 
 with false alarms — flagging 1 in 4 rows (as at 0.25) would make "anomalous" 
 a meaningless signal in the live demo.
+## Model Tuning Decisions
+Tested SMOTE oversampling via 5-fold cross-validation vs class_weight="balanced":
+- class_weight="balanced" (chosen): 94% precision, 74% recall
+- SMOTE: 51% precision, 80% recall
+Kept class_weight approach — a 6pt recall gain wasn't worth nearly halving 
+precision, which would cause alert fatigue in a real deployment.
