@@ -24,6 +24,7 @@ from sklearn.metrics import (
 )
 from imblearn.over_sampling import SMOTE
 from imblearn.pipeline import Pipeline as ImbPipeline
+from xgboost import XGBClassifier
 
 # Default path locations
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -219,6 +220,50 @@ def tune_threshold(model, X_test: pd.DataFrame, y_test: pd.Series) -> pd.DataFra
     return pd.DataFrame(results)
 
 
+def compare_with_xgboost(X_train: pd.DataFrame, y_train: pd.Series,
+                          X_test: pd.DataFrame, y_test: pd.Series) -> Dict[str, Any]:
+    """
+    Trains an XGBoost classifier on the same data/split as the Random Forest
+    baseline, for a direct algorithm comparison.
+    """
+    n_negative = (y_train == 0).sum()
+    n_positive = (y_train == 1).sum()
+    scale_pos_weight = n_negative / n_positive
+
+    print(f"\n[INFO] Training XGBoost (scale_pos_weight={scale_pos_weight:.2f})...")
+    xgb_model = XGBClassifier(
+        n_estimators=100,
+        max_depth=6,
+        scale_pos_weight=scale_pos_weight,
+        random_state=42,
+        eval_metric='logloss',
+        n_jobs=-1
+    )
+    xgb_model.fit(X_train, y_train)
+
+    y_pred = xgb_model.predict(X_test)
+    y_prob = xgb_model.predict_proba(X_test)[:, 1]
+
+    precision = precision_score(y_test, y_pred, zero_division=0)
+    recall = recall_score(y_test, y_pred, zero_division=0)
+    f1 = f1_score(y_test, y_pred, zero_division=0)
+    roc_auc = roc_auc_score(y_test, y_prob)
+
+    print("\n" + "=" * 55)
+    print("  XGBOOST vs RANDOM FOREST COMPARISON")
+    print("=" * 55)
+    print(f"XGBoost  — precision: {precision:.3f}, recall: {recall:.3f}, f1: {f1:.3f}, roc_auc: {roc_auc:.3f}")
+    print("=" * 55 + "\n")
+
+    return {
+        "model": xgb_model,
+        "precision": precision,
+        "recall": recall,
+        "f1_score": f1,
+        "roc_auc": roc_auc
+    }
+
+
 def save_model(
     model: Any,
     filepath: str = DEFAULT_MODEL_PATH,
@@ -263,6 +308,8 @@ def run_pipeline(
         "model": model,
         "metrics": metrics,
         "feature_names": FEATURE_COLUMNS,
+        "X_train": X_train,
+        "y_train": y_train,
         "X_test": X_test,
         "y_test": y_test
     }
@@ -273,6 +320,12 @@ if __name__ == "__main__":
 
     # Threshold tuning on the same test split used above
     tune_threshold(result["model"], result["X_test"], result["y_test"])
+
+    # XGBoost comparison, same train/test split as the Random Forest baseline
+    compare_with_xgboost(
+        result["X_train"], result["y_train"],
+        result["X_test"], result["y_test"]
+    )
 
     # Cross-validation comparison (SMOTE vs class_weight, tested earlier)
     df = load_data()

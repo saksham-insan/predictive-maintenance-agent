@@ -38,3 +38,11 @@ Tested classification thresholds 0.3-0.7 on the failure probability output:
 - 0.4 (chosen): 91.8% precision, 82.4% recall, F1=0.868
 Chose 0.4 — best F1 score, and a meaningful recall gain (+7.4pts) for only 
 a small precision cost, without SMOTE's much larger precision trade-off.
+## Algorithm Comparison
+Compared Random Forest (chosen) against XGBoost on the same train/test split:
+- Random Forest (threshold=0.4): 91.8% precision, 82.4% recall, F1=0.868
+- XGBoost (threshold=0.5): 84.6% precision, 80.9% recall, F1=0.827, ROC-AUC=0.986
+
+XGBoost had a slightly better ROC-AUC (better class separation overall) but 
+Random Forest gave a better F1 at our chosen operating threshold — kept 
+Random Forest as the production model.
