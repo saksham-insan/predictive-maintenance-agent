@@ -31,3 +31,10 @@ Tested SMOTE oversampling via 5-fold cross-validation vs class_weight="balanced"
 - SMOTE: 51% precision, 80% recall
 Kept class_weight approach — a 6pt recall gain wasn't worth nearly halving 
 precision, which would cause alert fatigue in a real deployment.
+
+## Threshold Tuning
+Tested classification thresholds 0.3-0.7 on the failure probability output:
+- 0.5 (default): 94.4% precision, 75.0% recall, F1=0.836
+- 0.4 (chosen): 91.8% precision, 82.4% recall, F1=0.868
+Chose 0.4 — best F1 score, and a meaningful recall gain (+7.4pts) for only 
+a small precision cost, without SMOTE's much larger precision trade-off.

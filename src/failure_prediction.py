@@ -194,6 +194,31 @@ def evaluate_with_cross_validation(X: pd.DataFrame, y: pd.Series, n_splits: int 
     return results
 
 
+def tune_threshold(model, X_test: pd.DataFrame, y_test: pd.Series) -> pd.DataFrame:
+    """
+    Tests multiple probability thresholds for classifying 'failure' and reports
+    precision/recall/f1 at each, instead of relying on the default 0.5 cutoff.
+    """
+    y_prob = model.predict_proba(X_test)[:, 1]
+    thresholds = [0.3, 0.4, 0.5, 0.6, 0.7]
+
+    print("\n" + "=" * 55)
+    print("  THRESHOLD TUNING")
+    print("=" * 55)
+
+    results = []
+    for t in thresholds:
+        y_pred_t = (y_prob >= t).astype(int)
+        precision = precision_score(y_test, y_pred_t, zero_division=0)
+        recall = recall_score(y_test, y_pred_t, zero_division=0)
+        f1 = f1_score(y_test, y_pred_t, zero_division=0)
+        results.append({"threshold": t, "precision": precision, "recall": recall, "f1": f1})
+        print(f"Threshold={t}: precision={precision:.3f}, recall={recall:.3f}, f1={f1:.3f}")
+
+    print("=" * 55 + "\n")
+    return pd.DataFrame(results)
+
+
 def save_model(
     model: Any,
     filepath: str = DEFAULT_MODEL_PATH,
@@ -237,15 +262,19 @@ def run_pipeline(
     return {
         "model": model,
         "metrics": metrics,
-        "feature_names": FEATURE_COLUMNS
+        "feature_names": FEATURE_COLUMNS,
+        "X_test": X_test,
+        "y_test": y_test
     }
 
 
 if __name__ == "__main__":
-    # Run the normal pipeline (single split, saves the model used by the rest of the app)
-    run_pipeline()
+    result = run_pipeline()
 
-    # Also run cross-validation for a more robust, defensible performance estimate
+    # Threshold tuning on the same test split used above
+    tune_threshold(result["model"], result["X_test"], result["y_test"])
+
+    # Cross-validation comparison (SMOTE vs class_weight, tested earlier)
     df = load_data()
     X, y, _ = preprocess_data(df)
     evaluate_with_cross_validation(X, y)
