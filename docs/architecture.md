@@ -69,3 +69,13 @@ Tested 3 models across 5 classification thresholds each (15 combinations total):
 Original Random Forest with a tuned threshold outperformed both a different 
 algorithm (XGBoost) and a hyperparameter-optimized version of itself — 
 confirming it as the genuinely best choice, not just the first one tried.
+## Anomaly Detection Algorithm Comparison
+Compared Isolation Forest against Local Outlier Factor (LOF) and an ensemble
+of both, across contamination levels 0.05-0.25:
+- Isolation Forest alone (chosen, contamination=0.15): 55.5% recall, 15% flagged
+- LOF alone: consistently worse than Isolation Forest at every contamination
+  level tested (e.g. 34.5% recall at contamination=0.15)
+- Ensemble (either model flags): 65.8% recall, but 26.3% of all rows flagged
+
+Kept Isolation Forest alone — the ensemble's recall gain didn't justify
+nearly doubling the false-alarm rate.
