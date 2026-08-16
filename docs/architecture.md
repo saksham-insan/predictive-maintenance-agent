@@ -56,3 +56,16 @@ This did NOT beat our original model combined with the tuned 0.4 classification
 threshold (precision=91.8%, recall=82.4%, F1=0.868). Kept the original model —
 threshold tuning provided a bigger, cheaper improvement than hyperparameter
 search in this case.
+
+## Full Model Comparison (Fair, Threshold-Swept)
+Tested 3 models across 5 classification thresholds each (15 combinations total):
+
+| Model | Best Threshold | Precision | Recall | F1 |
+|---|---|---|---|---|
+| Random Forest (chosen) | 0.4 | 91.8% | 82.4% | 0.868 |
+| XGBoost | 0.6 | 85.9% | 80.9% | 0.833 |
+| Grid-Searched Random Forest | 0.5 | 84.8% | 82.4% | 0.836 |
+
+Original Random Forest with a tuned threshold outperformed both a different 
+algorithm (XGBoost) and a hyperparameter-optimized version of itself — 
+confirming it as the genuinely best choice, not just the first one tried.

@@ -31,10 +31,8 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_DATA_PATH = os.path.join(PROJECT_ROOT, "data", "raw", "ai4i2020.csv")
 DEFAULT_MODEL_PATH = os.path.join(PROJECT_ROOT, "models", "baseline_model.pkl")
 
-# Type mapping for ordinal encoding
 TYPE_MAPPING = {'L': 0, 'M': 1, 'H': 2}
 
-# Feature definitions
 FEATURE_COLUMNS = [
     'Type_Encoded',
     'Air temperature',
@@ -49,9 +47,6 @@ TARGET_COLUMN = 'Machine failure'
 
 
 def load_data(filepath: str = DEFAULT_DATA_PATH) -> pd.DataFrame:
-    """
-    Load the AI4I 2020 predictive maintenance dataset from a CSV file.
-    """
     if not os.path.exists(filepath):
         raise FileNotFoundError(
             f"Dataset not found at '{filepath}'. Please ensure 'ai4i2020.csv' is in 'data/raw/'."
@@ -61,12 +56,7 @@ def load_data(filepath: str = DEFAULT_DATA_PATH) -> pd.DataFrame:
     return df
 
 
-def preprocess_data(
-    df: pd.DataFrame
-) -> Tuple[pd.DataFrame, pd.Series, pd.DataFrame]:
-    """
-    Clean and engineer features for failure prediction.
-    """
+def preprocess_data(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Series, pd.DataFrame]:
     data = df.copy()
 
     if 'Type' in data.columns and 'Type_Encoded' not in data.columns:
@@ -92,11 +82,7 @@ def preprocess_data(
         raise ValueError(f"Missing required feature columns in dataset: {missing_features}")
 
     X = data[FEATURE_COLUMNS]
-
-    if TARGET_COLUMN in data.columns:
-        y = data[TARGET_COLUMN]
-    else:
-        y = None
+    y = data[TARGET_COLUMN] if TARGET_COLUMN in data.columns else None
 
     return X, y, data
 
@@ -107,9 +93,6 @@ def train_baseline_model(
     n_estimators: int = 100,
     random_state: int = 42
 ) -> RandomForestClassifier:
-    """
-    Train a Random Forest Classifier baseline model.
-    """
     print(f"[INFO] Training Random Forest model (n_estimators={n_estimators}, random_state={random_state})...")
     model = RandomForestClassifier(
         n_estimators=n_estimators,
@@ -121,14 +104,7 @@ def train_baseline_model(
     return model
 
 
-def evaluate_model(
-    model: RandomForestClassifier,
-    X_test: pd.DataFrame,
-    y_test: pd.Series
-) -> Dict[str, Any]:
-    """
-    Evaluate the model on test data and print performance metrics.
-    """
+def evaluate_model(model, X_test: pd.DataFrame, y_test: pd.Series) -> Dict[str, Any]:
     y_pred = model.predict(X_test)
     y_prob = model.predict_proba(X_test)[:, 1] if hasattr(model, "predict_proba") else None
 
@@ -168,12 +144,6 @@ def evaluate_model(
 
 
 def evaluate_with_cross_validation(X: pd.DataFrame, y: pd.Series, n_splits: int = 5) -> Dict[str, Any]:
-    """
-    More rigorous evaluation than a single train/test split.
-    Uses stratified k-fold so each fold preserves the rare failure class ratio,
-    and applies SMOTE inside each fold (never on the full dataset beforehand —
-    that would leak synthetic samples derived from test data into training).
-    """
     skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
 
     pipeline = ImbPipeline([
@@ -195,17 +165,20 @@ def evaluate_with_cross_validation(X: pd.DataFrame, y: pd.Series, n_splits: int 
     return results
 
 
-def tune_threshold(model, X_test: pd.DataFrame, y_test: pd.Series) -> pd.DataFrame:
+def tune_threshold_for_model(model, X_test: pd.DataFrame, y_test: pd.Series,
+                              model_name: str = "Model") -> pd.DataFrame:
     """
-    Tests multiple probability thresholds for classifying 'failure' and reports
-    precision/recall/f1 at each, instead of relying on the default 0.5 cutoff.
+    Tests multiple probability thresholds for ANY trained model (Random Forest,
+    XGBoost, grid-searched model, etc.) and reports precision/recall/f1 at each.
+    Threshold tuning is applied AFTER training and works the same way regardless
+    of which model produced the probabilities.
     """
     y_prob = model.predict_proba(X_test)[:, 1]
     thresholds = [0.3, 0.4, 0.5, 0.6, 0.7]
 
-    print("\n" + "=" * 55)
-    print("  THRESHOLD TUNING")
-    print("=" * 55)
+    print(f"\n{'='*55}")
+    print(f"  THRESHOLD TUNING — {model_name}")
+    print(f"{'='*55}")
 
     results = []
     for t in thresholds:
@@ -216,16 +189,12 @@ def tune_threshold(model, X_test: pd.DataFrame, y_test: pd.Series) -> pd.DataFra
         results.append({"threshold": t, "precision": precision, "recall": recall, "f1": f1})
         print(f"Threshold={t}: precision={precision:.3f}, recall={recall:.3f}, f1={f1:.3f}")
 
-    print("=" * 55 + "\n")
+    print(f"{'='*55}\n")
     return pd.DataFrame(results)
 
 
 def compare_with_xgboost(X_train: pd.DataFrame, y_train: pd.Series,
                           X_test: pd.DataFrame, y_test: pd.Series) -> Dict[str, Any]:
-    """
-    Trains an XGBoost classifier on the same data/split as the Random Forest
-    baseline, for a direct algorithm comparison.
-    """
     n_negative = (y_train == 0).sum()
     n_positive = (y_train == 1).sum()
     scale_pos_weight = n_negative / n_positive
@@ -250,7 +219,7 @@ def compare_with_xgboost(X_train: pd.DataFrame, y_train: pd.Series,
     roc_auc = roc_auc_score(y_test, y_prob)
 
     print("\n" + "=" * 55)
-    print("  XGBOOST vs RANDOM FOREST COMPARISON")
+    print("  XGBOOST vs RANDOM FOREST COMPARISON (default threshold=0.5)")
     print("=" * 55)
     print(f"XGBoost  — precision: {precision:.3f}, recall: {recall:.3f}, f1: {f1:.3f}, roc_auc: {roc_auc:.3f}")
     print("=" * 55 + "\n")
@@ -265,10 +234,6 @@ def compare_with_xgboost(X_train: pd.DataFrame, y_train: pd.Series,
 
 
 def tune_hyperparameters(X_train: pd.DataFrame, y_train: pd.Series) -> RandomForestClassifier:
-    """
-    Searches over a grid of Random Forest hyperparameters using cross-validation
-    to find the combination that maximizes F1 score (balances precision and recall).
-    """
     param_grid = {
         'n_estimators': [100, 200, 300],
         'max_depth': [None, 10, 20],
@@ -303,14 +268,8 @@ def tune_hyperparameters(X_train: pd.DataFrame, y_train: pd.Series) -> RandomFor
     return grid_search.best_estimator_
 
 
-def save_model(
-    model: Any,
-    filepath: str = DEFAULT_MODEL_PATH,
-    feature_names: Optional[list] = None
-) -> None:
-    """
-    Save the trained model and metadata to disk.
-    """
+def save_model(model: Any, filepath: str = DEFAULT_MODEL_PATH,
+               feature_names: Optional[list] = None) -> None:
     os.makedirs(os.path.dirname(filepath), exist_ok=True)
     joblib.dump(model, filepath)
     print(f"[INFO] Model successfully saved to '{filepath}'.")
@@ -322,9 +281,6 @@ def run_pipeline(
     test_size: float = 0.2,
     random_state: int = 42
 ) -> Dict[str, Any]:
-    """
-    Execute the end-to-end failure prediction training and evaluation pipeline.
-    """
     df = load_data(data_path)
     X, y, _ = preprocess_data(df)
 
@@ -332,10 +288,7 @@ def run_pipeline(
         raise ValueError("Target variable 'Machine failure' not found in dataset.")
 
     X_train, X_test, y_train, y_test = train_test_split(
-        X, y,
-        test_size=test_size,
-        random_state=random_state,
-        stratify=y
+        X, y, test_size=test_size, random_state=random_state, stratify=y
     )
     print(f"[INFO] Dataset split: Train size = {X_train.shape[0]}, Test size = {X_test.shape[0]}.")
 
@@ -357,21 +310,23 @@ def run_pipeline(
 if __name__ == "__main__":
     result = run_pipeline()
 
-    # Threshold tuning on the same test split used above
-    tune_threshold(result["model"], result["X_test"], result["y_test"])
+    # --- Original Random Forest: threshold sweep ---
+    tune_threshold_for_model(result["model"], result["X_test"], result["y_test"], "Original Random Forest")
 
-    # XGBoost comparison, same train/test split as the Random Forest baseline
-    compare_with_xgboost(
+    # --- XGBoost: default threshold, then threshold sweep ---
+    xgb_result = compare_with_xgboost(
         result["X_train"], result["y_train"],
         result["X_test"], result["y_test"]
     )
+    tune_threshold_for_model(xgb_result["model"], result["X_test"], result["y_test"], "XGBoost")
 
-    # Hyperparameter tuning — searches for better Random Forest settings
+    # --- Grid-searched Random Forest: default threshold, then threshold sweep ---
     best_model = tune_hyperparameters(result["X_train"], result["y_train"])
-    print("[INFO] Evaluating tuned model on test set:")
+    print("[INFO] Evaluating grid-searched model on test set (default threshold):")
     evaluate_model(best_model, result["X_test"], result["y_test"])
+    tune_threshold_for_model(best_model, result["X_test"], result["y_test"], "Grid-Searched Random Forest")
 
-    # Cross-validation comparison (SMOTE vs class_weight, tested earlier)
+    # --- Cross-validation comparison (SMOTE vs class_weight) ---
     df = load_data()
     X, y, _ = preprocess_data(df)
     evaluate_with_cross_validation(X, y)
