@@ -36,15 +36,24 @@ if __name__ == "__main__":
     result = run_pipeline(sample_row)
     print(result)
 
-# quick test, paste this temporarily at the bottom of orchestrator.py or run in a scratch script
-from agents.diagnosis_agent import diagnosis_agent
+if __name__ == "__main__":
+    low_risk_row = {
+        "Type": "M",
+        "Air temperature [K]": 298.1,
+        "Process temperature [K]": 308.6,
+        "Rotational speed [rpm]": 1551,
+        "Torque [Nm]": 42.8,
+        "Tool wear [min]": 0
+    }
 
-risky_row = {
-    "Type": "L",
-    "Air temperature [K]": 300.5,
-    "Process temperature [K]": 311.2,
-    "Rotational speed [rpm]": 1350,
-    "Torque [Nm]": 65.0,
-    "Tool wear [min]": 220
-}
-print(diagnosis_agent(risky_row))
+    high_risk_row = {
+        "Type": "L",
+        "Air temperature [K]": 300.5,
+        "Process temperature [K]": 311.2,
+        "Rotational speed [rpm]": 1350,
+        "Torque [Nm]": 65.0,
+        "Tool wear [min]": 220
+    }
+
+    print("Low risk row:", run_pipeline(low_risk_row))
+    print("High risk row:", run_pipeline(high_risk_row))
