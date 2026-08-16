@@ -306,13 +306,52 @@ def run_pipeline(
         "y_test": y_test
     }
 
+import matplotlib.pyplot as plt
+
+
+def plot_feature_importance(model, feature_names: list, save_path: str = None):
+    """
+    Extracts and visualizes which features the Random Forest relies on most
+    for its predictions. Random Forest computes this automatically during
+    training (based on how much each feature reduces impurity across all trees).
+    """
+    importances = model.feature_importances_
+    importance_df = pd.DataFrame({
+        "Feature": feature_names,
+        "Importance": importances
+    }).sort_values(by="Importance", ascending=True)
+
+    print("\n" + "=" * 55)
+    print("  FEATURE IMPORTANCE (Random Forest)")
+    print("=" * 55)
+    for _, row in importance_df.sort_values(by="Importance", ascending=False).iterrows():
+        print(f"{row['Feature']:20s}: {row['Importance']:.4f}")
+    print("=" * 55 + "\n")
+
+    plt.figure(figsize=(9, 6))
+    plt.barh(importance_df["Feature"], importance_df["Importance"], color="#4C72B0")
+    plt.xlabel("Importance")
+    plt.title("Feature Importance — Failure Prediction Model")
+    plt.tight_layout()
+
+    if save_path is None:
+        save_path = os.path.join(PROJECT_ROOT, "docs", "feature_importance.png")
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    plt.savefig(save_path, dpi=150)
+    print(f"[INFO] Chart saved to '{save_path}'")
+    plt.close()
+
+    return importance_df
+
 
 if __name__ == "__main__":
     result = run_pipeline()
+    plot_feature_importance(result["model"], FEATURE_COLUMNS)
 
-    # --- Original Random Forest: threshold sweep ---
     tune_threshold_for_model(result["model"], result["X_test"], result["y_test"], "Original Random Forest")
 
+    # --- Original Random Forest: threshold sweep ---
+   
     # --- XGBoost: default threshold, then threshold sweep ---
     xgb_result = compare_with_xgboost(
         result["X_train"], result["y_train"],

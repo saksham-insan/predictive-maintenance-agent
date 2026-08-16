@@ -10,4 +10,5 @@ langgraph
 shap
 imbalanced-learn
 xgboost 
+matplotlib
 
