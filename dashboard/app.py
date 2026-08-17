@@ -22,17 +22,6 @@ DATA_PATH = os.path.join(PROJECT_ROOT, "data", "raw", "ai4i2020.csv")
 def md(content: str, target=None):
     """
     Render raw HTML/CSS via st.markdown.
-
-    Two Markdown quirks bite here:
-    1. Any line with 4+ leading spaces is treated as a code block, which
-       silently breaks unsafe_allow_html when HTML is built inside nested
-       Python functions and inherits source indentation.
-    2. Raw HTML blocks for ordinary tags (div, etc.) end at the first
-       blank line — unlike <style>/<script>, which run until their closing
-       tag. Joined/looped HTML (like table rows) easily picks up stray
-       blank lines from triple-quoted templates, splitting one HTML block
-       into several that aren't all recognized as HTML.
-    Stripping leading whitespace AND blank lines line-by-line avoids both.
     """
     lines = [line.lstrip() for line in content.strip("\n").split("\n")]
     cleaned = "\n".join(line for line in lines if line != "")
@@ -52,10 +41,10 @@ COLORS = {
     "text": "#EDEAE4",
     "text_dim": "#8B939B",
     "text_faint": "#5C6570",
-    "ok": "#4F9DDE",       # steady, normal reading
-    "watch": "#F5A623",    # anomaly flagged, low confidence
-    "danger": "#E5484D",   # high-risk, high confidence
-    "teal": "#2DD4BF",     # scanned / neutral throughput
+    "ok": "#4F9DDE",
+    "watch": "#F5A623",
+    "danger": "#E5484D",
+    "teal": "#2DD4BF",
 }
 
 # ---------------------------------------------------------------------------
@@ -88,7 +77,6 @@ def inject_css():
     body, p, div, span {{ font-family: 'Space Grotesk', sans-serif; }}
     .mono {{ font-family: 'IBM Plex Mono', monospace; }}
 
-    /* -- Header -------------------------------------------------------- */
     .eyebrow {{
         font-family: 'IBM Plex Mono', monospace;
         font-size: 0.72rem;
@@ -115,7 +103,6 @@ def inject_css():
     .dash-sub {{ color: var(--text-dim); font-size: 0.92rem; margin-bottom: 1.4rem; }}
     .dash-sub .arrow {{ color: var(--text-faint); margin: 0 6px; }}
 
-    /* -- Pulse strip (signature element) -------------------------------- */
     .strip-wrap {{
         background: var(--panel);
         border: 1px solid var(--hairline);
@@ -151,7 +138,6 @@ def inject_css():
         padding: 12px 0;
     }}
 
-    /* -- Dial gauges ------------------------------------------------- */
     .dial-row {{ display: flex; gap: 16px; margin-bottom: 18px; flex-wrap: wrap; }}
     .dial-card {{
         flex: 1 1 220px;
@@ -184,7 +170,6 @@ def inject_css():
         font-size: 0.76rem; color: var(--text-dim); margin-top: 4px;
     }}
 
-    /* -- Status panel -------------------------------------------------- */
     .status-panel {{
         background: var(--panel);
         border: 1px solid var(--hairline);
@@ -211,7 +196,6 @@ def inject_css():
     .status-body {{ font-size: 0.95rem; color: var(--text); line-height: 1.5; }}
     .status-why {{ color: var(--text-dim); font-size: 0.85rem; margin-top: 6px; }}
 
-    /* -- Event log ------------------------------------------------------ */
     .log-row {{
         display: grid;
         grid-template-columns: 70px 110px 1fr 2fr;
@@ -231,6 +215,7 @@ def inject_css():
     }}
     .log-time {{ font-family: 'IBM Plex Mono', monospace; color: var(--text-dim); }}
     .log-conf {{ font-family: 'IBM Plex Mono', monospace; color: var(--danger); font-weight: 600; }}
+    .log-conf.watch {{ color: var(--watch); }}
     .log-action {{ color: var(--text); font-weight: 500; }}
     .log-reason {{ color: var(--text-dim); }}
     .log-wrap {{
@@ -238,9 +223,9 @@ def inject_css():
         border: 1px solid var(--hairline);
         border-radius: 8px;
         overflow: hidden;
+        margin-bottom: 18px;
     }}
 
-    /* Sidebar section label */
     .side-label {{
         font-family: 'IBM Plex Mono', monospace;
         font-size: 0.7rem;
@@ -271,7 +256,46 @@ st.sidebar.markdown('<div class="side-label">Simulation</div>', unsafe_allow_htm
 max_rows = st.sidebar.slider("Rows to stream", 10, 500, 100)
 delay = st.sidebar.slider("Delay between readings (sec)", 0.0, 2.0, 0.3)
 start_button = st.sidebar.button("▶  Start simulation", use_container_width=True)
+st.sidebar.markdown("---")
+st.sidebar.markdown('<div class="side-label">Custom Input</div>', unsafe_allow_html=True)
 
+input_mode = st.sidebar.radio(
+    "Data source",
+    ["Simulated stream", "Upload CSV", "Manual entry"],
+    label_visibility="collapsed"
+)
+
+uploaded_file = None
+manual_row = None
+manual_submit = False
+
+if input_mode == "Upload CSV":
+    uploaded_file = st.sidebar.file_uploader(
+        "Upload sensor data (CSV)",
+        type=["csv"],
+        help="Required columns: Type, Air temperature [K], Process temperature [K], "
+             "Rotational speed [rpm], Torque [Nm], Tool wear [min]"
+    )
+
+elif input_mode == "Manual entry":
+    with st.sidebar.form("manual_input_form"):
+        m_type = st.selectbox("Type", ["L", "M", "H"])
+        m_air_temp = st.number_input("Air temperature [K]", value=298.1, step=0.1)
+        m_process_temp = st.number_input("Process temperature [K]", value=308.6, step=0.1)
+        m_rpm = st.number_input("Rotational speed [rpm]", value=1500, step=10)
+        m_torque = st.number_input("Torque [Nm]", value=40.0, step=0.1)
+        m_tool_wear = st.number_input("Tool wear [min]", value=0, step=1)
+        manual_submit = st.form_submit_button("Run diagnosis")
+
+        if manual_submit:
+            manual_row = {
+                "Type": m_type,
+                "Air temperature [K]": m_air_temp,
+                "Process temperature [K]": m_process_temp,
+                "Rotational speed [rpm]": m_rpm,
+                "Torque [Nm]": m_torque,
+                "Tool wear [min]": m_tool_wear
+            }
 st.sidebar.markdown("---")
 st.sidebar.markdown('<div class="side-label">Legend</div>', unsafe_allow_html=True)
 st.sidebar.markdown(f"""
@@ -285,11 +309,21 @@ st.sidebar.markdown(f"""
 # ---------------------------------------------------------------------------
 # Session state
 # ---------------------------------------------------------------------------
+# log_rows / low_conf_rows live in session_state (not plain local variables)
+# so they SURVIVE a rerun. Streamlit reruns the whole script on every widget
+# interaction, including a download button click -- with plain local
+# variables, that rerun would skip the "if start_button:" block entirely
+# (start_button is False again) and the lists would vanish. Session state
+# persists across reruns, so the results stay visible until a NEW run
+# explicitly resets them.
 if "total_scanned" not in st.session_state:
     st.session_state.total_scanned = 0
     st.session_state.total_anomalies = 0
     st.session_state.total_high_confidence = 0
-    st.session_state.pulse_history = []  # list of (color_hex, height_pct)
+    st.session_state.pulse_history = []
+    st.session_state.log_rows = []
+    st.session_state.low_conf_rows = []
+    st.session_state.last_csv_name = None
 
 # ---------------------------------------------------------------------------
 # Layout placeholders
@@ -297,7 +331,7 @@ if "total_scanned" not in st.session_state:
 strip_placeholder = st.empty()
 dial_placeholder = st.empty()
 status_placeholder = st.empty()
-log_placeholder = st.empty()
+results_placeholder = st.container()
 
 
 def render_strip():
@@ -351,7 +385,6 @@ def render_dials():
 
 
 def render_status(kind, tag_text, body, why=None):
-    """kind: 'ok' | 'watch' | 'danger'"""
     css_class = {"ok": "", "watch": "watch", "danger": "danger"}[kind]
     why_html = f'<div class="status-why">{html.escape(why)}</div>' if why else ""
     md(f"""
@@ -366,27 +399,65 @@ def render_status(kind, tag_text, body, why=None):
     """, target=status_placeholder)
 
 
-def render_log(log_rows):
-    if not log_rows:
+def render_alert_table(rows, title, conf_class="danger"):
+    if not rows:
         return
     rows_html = "".join(f"""
         <div class="log-row">
             <div class="log-time mono">t={r['Time']}</div>
-            <div class="log-conf">{r['Confidence']}</div>
-            <div class="log-action">{html.escape(r['Action'])}</div>
+            <div class="log-conf {conf_class if conf_class == 'watch' else ''}">{r['Confidence']}</div>
+            <div class="log-action">{html.escape(r.get('Action') or r.get('Prediction', ''))}</div>
             <div class="log-reason">{html.escape(r['Reason'])}</div>
         </div>
-    """ for r in log_rows)
+    """ for r in rows)
 
     md(f"""
-    <div style="margin-top:6px; margin-bottom:8px; font-weight:600; font-size:1.05rem;">High-risk events</div>
+    <div style="margin-top:6px; margin-bottom:8px; font-weight:600; font-size:1.05rem;">{title}</div>
     <div class="log-wrap">
         <div class="log-row head">
             <div>Time</div><div>Confidence</div><div>Action</div><div>Reason</div>
         </div>
         {rows_html}
     </div>
-    """, target=log_placeholder)
+    """)
+
+
+def render_results():
+    """
+    Renders BOTH result tables and their download buttons together, always
+    reading from session_state so they persist across reruns (e.g. after a
+    download button click) until a new run explicitly resets the state.
+    """
+    log_rows = st.session_state.log_rows
+    low_conf_rows = st.session_state.low_conf_rows
+
+    if not log_rows and not low_conf_rows:
+        return
+
+    with results_placeholder:
+        if log_rows:
+            render_alert_table(log_rows, "High-risk events", conf_class="danger")
+            high_df = pd.DataFrame(log_rows)
+            st.download_button(
+                "⬇ Download high-risk alerts (CSV)",
+                data=high_df.to_csv(index=False).encode("utf-8"),
+                file_name="high_risk_alerts.csv",
+                mime="text/csv",
+                use_container_width=True,
+                key="dl_high"
+            )
+
+        if low_conf_rows:
+            render_alert_table(low_conf_rows, "Low-confidence anomalies", conf_class="watch")
+            low_df = pd.DataFrame(low_conf_rows)
+            st.download_button(
+                "⬇ Download low-confidence anomalies (CSV)",
+                data=low_df.to_csv(index=False).encode("utf-8"),
+                file_name="low_confidence_anomalies.csv",
+                mime="text/csv",
+                use_container_width=True,
+                key="dl_low"
+            )
 
 
 def row_to_dict(row: pd.Series) -> dict:
@@ -400,58 +471,109 @@ def row_to_dict(row: pd.Series) -> dict:
     }
 
 
+def process_row(i, sensor_row, label_prefix="t"):
+    """Runs one row through the pipeline, updates counters/history, appends
+    to session_state result lists, and renders the current status panel."""
+    result = run_pipeline(sensor_row)
+    st.session_state.total_scanned += 1
+
+    if result["status"] == "normal":
+        st.session_state.pulse_history.append((COLORS["ok"], 35))
+        render_status("ok", "NORMAL", f"[{label_prefix}={i}] Reading OK — no anomaly detected.")
+    else:
+        st.session_state.total_anomalies += 1
+        diagnosis = result["diagnosis"]
+        recommendation = result["recommendation"]
+        conf_pct = diagnosis["confidence"] * 100
+        bar_height = max(15, min(100, conf_pct))
+
+        if diagnosis["confidence"] >= 0.70 and diagnosis["prediction"] == 1:
+            st.session_state.total_high_confidence += 1
+            st.session_state.pulse_history.append((COLORS["danger"], bar_height))
+            render_status(
+                "danger", f"{conf_pct:.0f}% CONFIDENCE",
+                f"[{label_prefix}={i}] {recommendation['action']}",
+                why=diagnosis["explanation"],
+            )
+            st.session_state.log_rows.append({
+                "Time": i,
+                "Confidence": f"{diagnosis['confidence']:.0%}",
+                "Action": recommendation["action"],
+                "Reason": diagnosis["explanation"],
+            })
+        else:
+            st.session_state.pulse_history.append((COLORS["watch"], bar_height))
+            render_status(
+                "watch", f"{conf_pct:.0f}% CONFIDENCE",
+                f"[{label_prefix}={i}] Anomaly flagged — confidence too low to act on.",
+            )
+            st.session_state.low_conf_rows.append({
+                "Time": i,
+                "Confidence": f"{diagnosis['confidence']:.0%}",
+                "Prediction": "Failure" if diagnosis["prediction"] == 1 else "No failure",
+                "Reason": diagnosis["explanation"],
+            })
+
+    render_strip()
+    render_dials()
+
+
 render_strip()
 render_dials()
 
 # ---------------------------------------------------------------------------
-# Simulation loop
+# Simulation loop — starting a NEW run resets session_state result lists
 # ---------------------------------------------------------------------------
 if start_button:
+    st.session_state.total_scanned = 0
+    st.session_state.total_anomalies = 0
+    st.session_state.total_high_confidence = 0
+    st.session_state.pulse_history = []
+    st.session_state.log_rows = []
+    st.session_state.low_conf_rows = []
+
     df = pd.read_csv(DATA_PATH).head(max_rows)
-    log_rows = []
-
     for i, row in df.iterrows():
-        sensor_row = row_to_dict(row)
-        result = run_pipeline(sensor_row)
-
-        st.session_state.total_scanned += 1
-
-        if result["status"] == "normal":
-            st.session_state.pulse_history.append((COLORS["ok"], 35))
-            render_status("ok", "NORMAL", f"[t={i}] Reading OK — no anomaly detected.")
-        else:
-            st.session_state.total_anomalies += 1
-            diagnosis = result["diagnosis"]
-            recommendation = result["recommendation"]
-            conf_pct = diagnosis["confidence"] * 100
-            bar_height = max(15, min(100, conf_pct))
-
-            if diagnosis["confidence"] >= 0.70 and diagnosis["prediction"] == 1:
-                st.session_state.total_high_confidence += 1
-                st.session_state.pulse_history.append((COLORS["danger"], bar_height))
-                render_status(
-                    "danger", f"{conf_pct:.0f}% CONFIDENCE",
-                    f"[t={i}] {recommendation['action']}",
-                    why=diagnosis["explanation"],
-                )
-                log_rows.append({
-                    "Time": i,
-                    "Confidence": f"{diagnosis['confidence']:.0%}",
-                    "Action": recommendation["action"],
-                    "Reason": diagnosis["explanation"],
-                })
-            else:
-                st.session_state.pulse_history.append((COLORS["watch"], bar_height))
-                render_status(
-                    "watch", f"{conf_pct:.0f}% CONFIDENCE",
-                    f"[t={i}] Anomaly flagged — confidence too low to act on.",
-                )
-
-        render_strip()
-        render_dials()
-        if log_rows:
-            render_log(log_rows)
-
+        process_row(i, row_to_dict(row), label_prefix="t")
         time.sleep(delay)
 
     st.success("Simulation complete.")
+
+# ---------------------------------------------------------------------------
+# CSV Upload handling — only reprocess when a NEW file is uploaded, not on
+# every rerun (e.g. a download button click would otherwise re-run the
+# whole file through the pipeline again)
+# ---------------------------------------------------------------------------
+if uploaded_file is not None and uploaded_file.name != st.session_state.last_csv_name:
+    required_cols = ["Type", "Air temperature [K]", "Process temperature [K]",
+                      "Rotational speed [rpm]", "Torque [Nm]", "Tool wear [min]"]
+    try:
+        uploaded_df = pd.read_csv(uploaded_file)
+        missing = [c for c in required_cols if c not in uploaded_df.columns]
+        if missing:
+            st.error(f"CSV is missing required columns: {', '.join(missing)}")
+        else:
+            st.session_state.total_scanned = 0
+            st.session_state.total_anomalies = 0
+            st.session_state.total_high_confidence = 0
+            st.session_state.pulse_history = []
+            st.session_state.log_rows = []
+            st.session_state.low_conf_rows = []
+            st.session_state.last_csv_name = uploaded_file.name
+
+            st.success(f"Loaded {len(uploaded_df)} rows. Running through the pipeline...")
+            for i, row in uploaded_df.iterrows():
+                process_row(i, row_to_dict(row), label_prefix="row")
+    except Exception as e:
+        st.error(f"Couldn't process the file: {e}")
+
+# ---------------------------------------------------------------------------
+# Manual entry handling — each submission adds to the running results
+# ---------------------------------------------------------------------------
+if manual_row is not None:
+    process_row("manual", manual_row, label_prefix="entry")
+
+# ---------------------------------------------------------------------------
+# Always render results (persists across reruns, e.g. after download click)
+# ---------------------------------------------------------------------------
+render_results()
