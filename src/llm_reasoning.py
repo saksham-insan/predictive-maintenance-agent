@@ -3,11 +3,13 @@ Gemini AI Reasoning Module for Predictive Maintenance Agent.
 
 Takes the technical SHAP explanation and diagnosis details and asks Gemini
 to produce a clear, natural-language insight for a maintenance manager.
+When Gemini is unavailable (missing key, quota exceeded, timeout, or network error),
+dynamically generates a local rule-based natural-language maintenance insight.
 
 Includes:
 - Non-blocking asynchronous execution via background thread pool.
 - Event-based caching and deduplication to prevent duplicate API requests.
-- Strict timeout handling and fallback to technical SHAP explanation on failure.
+- Strict timeout handling and fallback to local rule-based insights on failure.
 """
 
 import os
@@ -113,9 +115,124 @@ def _handle_api_exception(exc: Exception) -> bool:
             _QUOTA_EXHAUSTED = True
             if not _QUOTA_WARNED:
                 _QUOTA_WARNED = True
-                print("[WARN] Gemini quota exhausted; using SHAP fallback for remaining events.")
+                print("[WARN] Gemini quota exhausted; using local rule-based insights for remaining events.")
         return True
     return False
+
+
+def _extract_shap_factors(explanation: str) -> tuple[list[str], list[str]]:
+    """
+    Extracts contributing features that increased vs decreased failure risk from SHAP explanation text.
+    """
+    if not explanation:
+        return [], []
+
+    increased = []
+    decreased = []
+    for part in explanation.split(";"):
+        part = part.strip()
+        if not part:
+            continue
+        if "increased" in part.lower():
+            feat = part.lower().split("increased")[0].strip()
+            # Preserve original casing if possible
+            idx = part.lower().find("increased")
+            feat_orig = part[:idx].strip()
+            if feat_orig:
+                increased.append(feat_orig)
+        elif "decreased" in part.lower():
+            idx = part.lower().find("decreased")
+            feat_orig = part[:idx].strip()
+            if feat_orig:
+                decreased.append(feat_orig)
+
+    return increased, decreased
+
+
+def _format_factor_list(factors: list[str]) -> str:
+    """Formats a list of factors into natural English."""
+    if not factors:
+        return ""
+    if len(factors) == 1:
+        return factors[0]
+    if len(factors) == 2:
+        return f"{factors[0]} and {factors[1]}"
+    return f"{', '.join(factors[:-1])}, and {factors[-1]}"
+
+
+def generate_local_insight(diagnosis: dict, recommendation: dict = None) -> str:
+    """
+    Generates a dynamic, natural-language, actionable maintenance insight locally
+    without using external LLM APIs.
+
+    Uses diagnosis prediction, confidence, SHAP explanation risk factors,
+    and recommendation data. Never invents sensor values and produces distinct
+    wording for HIGH-RISK vs LOW-CONFIDENCE events.
+    """
+    prediction = int(diagnosis.get("prediction", 0))
+    conf_val = diagnosis.get("confidence", 0.0)
+    if isinstance(conf_val, (int, float)):
+        conf_pct = f"{conf_val:.0%}" if conf_val <= 1.0 else f"{conf_val:.0f}%"
+        is_high_conf = conf_val >= 0.70
+    else:
+        conf_pct = str(conf_val)
+        is_high_conf = False
+
+    explanation = diagnosis.get("plain_explanation") or diagnosis.get("explanation", "")
+    inc_factors, dec_factors = _extract_shap_factors(explanation)
+
+    action = recommendation.get("action", "") if recommendation else ""
+    urgency = recommendation.get("urgency", "") if recommendation else ""
+
+    # HIGH-RISK CASE: Failure predicted with high confidence / high urgency
+    if prediction == 1 and (is_high_conf or urgency.lower() == "high"):
+        rec_action = action if action else "schedule immediate maintenance"
+        action_phrase = rec_action.rstrip(".").lower()
+        if inc_factors:
+            factors_str = _format_factor_list(inc_factors)
+            return (
+                f"Elevated {factors_str} indicates significant equipment stress with {conf_pct} failure confidence. "
+                f"Prioritize inspection and {action_phrase} before continued operation increases the likelihood of failure."
+            )
+        else:
+            return (
+                f"Multiple operating indicators indicate significant equipment stress with {conf_pct} failure confidence. "
+                f"Prioritize inspection and {action_phrase} before continued operation increases the likelihood of failure."
+            )
+
+    # MODERATE-RISK / MEDIUM URGENCY CASE: Failure predicted with moderate/lower confidence
+    if prediction == 1:
+        rec_action = action if action else "Schedule maintenance within 48 hours"
+        action_phrase = rec_action.rstrip(".")
+        if inc_factors:
+            factors_str = _format_factor_list(inc_factors)
+            return (
+                f"Early risk patterns detected primarily from {factors_str} with moderate confidence ({conf_pct}). "
+                f"{action_phrase} and monitor operating telemetry for escalating degradation."
+            )
+        else:
+            return (
+                f"Early failure indicators detected with moderate confidence ({conf_pct}). "
+                f"{action_phrase} and monitor operating telemetry for escalating degradation."
+            )
+
+    # LOW-CONFIDENCE / WATCH ANOMALY CASE: Prediction is 0 or low-confidence anomaly flagged
+    if inc_factors:
+        factors_str = _format_factor_list(inc_factors)
+        return (
+            f"Current readings show minor variances in {factors_str}, but evidence for imminent failure remains low ({conf_pct} confidence). "
+            f"Continue active monitoring before deciding on maintenance intervention."
+        )
+    elif explanation:
+        return (
+            f"Current readings do not provide strong evidence of imminent failure ({conf_pct} confidence), "
+            f"but identified operating factors should continue to be monitored before deciding on maintenance."
+        )
+    else:
+        return (
+            f"Operating parameters are within normal tolerances with low failure probability ({conf_pct} confidence). "
+            f"Continue standard routine monitoring."
+        )
 
 
 def get_llm_reasoning(
@@ -124,22 +241,19 @@ def get_llm_reasoning(
     timeout: float = 6.0
 ) -> str:
     """
-    Converts a technical SHAP explanation into a natural-language
-    AI insight for a maintenance manager.
-
-    Falls back to the original SHAP explanation if Gemini is unavailable,
-    quota is exhausted, times out, or encounters an error.
+    Converts technical diagnosis details into a natural-language AI insight.
+    Uses Gemini when available, or falls back to a dynamic local rule-based insight
+    when Gemini is unavailable, quota is exhausted, times out, or errors.
     """
-    # Existing technical explanation as fallback
-    fallback_text = diagnosis.get("plain_explanation") or diagnosis.get("explanation", "")
+    local_fallback = generate_local_insight(diagnosis, recommendation)
 
     # Fast short-circuit if quota is exhausted
     if _QUOTA_EXHAUSTED:
-        return fallback_text
+        return local_fallback
 
     client = get_client()
     if client is None:
-        return fallback_text
+        return local_fallback
 
     # Recommendation
     rec_action = (
@@ -159,9 +273,11 @@ def get_llm_reasoning(
     # Confidence
     conf_val = diagnosis.get("confidence", 0.0)
     if isinstance(conf_val, (int, float)):
-        conf_text = f"{conf_val:.0%}"
+        conf_text = f"{conf_val:.0%}" if conf_val <= 1.0 else f"{conf_val:.0f}%"
     else:
         conf_text = str(conf_val)
+
+    technical_explanation = diagnosis.get("plain_explanation") or diagnosis.get("explanation", "")
 
     prompt = f"""
 You are an AI assistant helping a maintenance engineer understand
@@ -184,7 +300,7 @@ Prediction: {pred_text}
 Confidence: {conf_text}
 
 Technical explanation:
-{fallback_text}
+{technical_explanation}
 
 Recommended action:
 {rec_action}
@@ -201,19 +317,19 @@ Respond with ONLY one concise sentence.
             summary = response.text.strip()
             if summary:
                 return summary
-        return fallback_text
+        return local_fallback
 
     try:
         # Enforce timeout so slow API responses never freeze execution
         future = _CALL_EXECUTOR.submit(_call_api)
         return future.result(timeout=timeout)
     except concurrent.futures.TimeoutError:
-        print(f"[WARN] Gemini reasoning call timed out after {timeout}s, falling back to SHAP text")
-        return fallback_text
+        print(f"[WARN] Gemini reasoning call timed out after {timeout}s, falling back to local insight")
+        return local_fallback
     except Exception as e:
         if not _handle_api_exception(e):
-            print(f"[WARN] Gemini reasoning call failed, falling back to SHAP text: {e}")
-        return fallback_text
+            print(f"[WARN] Gemini reasoning call failed, falling back to local insight: {e}")
+        return local_fallback
 
 
 def trigger_async_llm_reasoning(
@@ -225,27 +341,22 @@ def trigger_async_llm_reasoning(
 ) -> str:
     """
     Triggers an asynchronous, non-blocking Gemini AI reasoning call in the background.
-    - If quota is exhausted, immediately returns the fallback SHAP explanation.
+    - If quota is exhausted or Gemini client is not configured, immediately returns the local rule-based insight.
     - If already cached, returns the cached result immediately.
-    - If already in flight, returns the fallback SHAP explanation immediately without
-      starting a duplicate request.
-    - Otherwise, starts a background task and immediately returns the fallback SHAP explanation.
+    - If already in flight, returns the local rule-based insight immediately without starting duplicate requests.
+    - Otherwise, starts a background task and immediately returns the local rule-based insight.
     """
-    fallback_text = diagnosis.get("plain_explanation") or diagnosis.get("explanation", "")
-
-    # Fast short-circuit if quota is exhausted
-    if _QUOTA_EXHAUSTED:
-        return fallback_text
-
+    local_fallback = generate_local_insight(diagnosis, recommendation)
     event_key = make_event_key(event_id, diagnosis, recommendation)
 
     with _CACHE_LOCK:
-        if _QUOTA_EXHAUSTED:
-            return fallback_text
         if event_key in _AI_INSIGHTS_CACHE:
             return _AI_INSIGHTS_CACHE[event_key]
+        if _QUOTA_EXHAUSTED or get_client() is None:
+            _AI_INSIGHTS_CACHE[event_key] = local_fallback
+            return local_fallback
         if event_key in _IN_FLIGHT_KEYS:
-            return fallback_text
+            return local_fallback
         _IN_FLIGHT_KEYS.add(event_key)
 
     def _worker():
@@ -263,8 +374,8 @@ def trigger_async_llm_reasoning(
             if not _handle_api_exception(exc):
                 print(f"[WARN] Background Gemini worker error for {event_key}: {exc}")
             with _CACHE_LOCK:
-                _AI_INSIGHTS_CACHE[event_key] = fallback_text
+                _AI_INSIGHTS_CACHE[event_key] = local_fallback
                 _IN_FLIGHT_KEYS.discard(event_key)
 
     _EXECUTOR.submit(_worker)
-    return fallback_text
+    return local_fallback

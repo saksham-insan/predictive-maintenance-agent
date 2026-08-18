@@ -17,7 +17,8 @@ from agents.orchestrator import run_pipeline
 from llm_reasoning import (
     get_cached_insight,
     trigger_async_llm_reasoning,
-    make_event_key
+    make_event_key,
+    generate_local_insight
 )
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -504,7 +505,7 @@ def render_results():
                     "Confidence": r["Confidence"],
                     "Action": r.get("Action", ""),
                     "Reason": r["Reason"],
-                    "AI_Insight": r.get("AI_Insight", r["Reason"])
+                    "AI_Insight": r.get("AI_Insight", "")
                 }
                 for r in log_rows
             ]
@@ -526,7 +527,7 @@ def render_results():
                     "Confidence": r["Confidence"],
                     "Prediction": r.get("Prediction", ""),
                     "Reason": r["Reason"],
-                    "AI_Insight": r.get("AI_Insight", r["Reason"])
+                    "AI_Insight": r.get("AI_Insight", "")
                 }
                 for r in low_conf_rows
             ]
@@ -573,6 +574,7 @@ def process_row(i, sensor_row, label_prefix="t"):
         shap_reason = diagnosis.get("plain_explanation") or diagnosis.get("explanation", "")
         event_label = f"{label_prefix}={i}"
         event_key = make_event_key(event_label, diagnosis, recommendation)
+        local_insight = generate_local_insight(diagnosis, recommendation)
 
         if diagnosis["confidence"] >= 0.70 and diagnosis["prediction"] == 1:
             st.session_state.total_high_confidence += 1
@@ -587,7 +589,7 @@ def process_row(i, sensor_row, label_prefix="t"):
                 "Confidence": f"{diagnosis['confidence']:.0%}",
                 "Action": recommendation["action"],
                 "Reason": shap_reason,
-                "AI_Insight": shap_reason,
+                "AI_Insight": local_insight,
                 "_key": event_key,
             }
             st.session_state.log_rows.append(high_row)
@@ -595,7 +597,7 @@ def process_row(i, sensor_row, label_prefix="t"):
             high_insight = {
                 "time": event_label,
                 "risk": "high",
-                "insight": shap_reason,
+                "insight": local_insight,
                 "_key": event_key,
             }
             st.session_state.ai_insights.append(high_insight)
@@ -610,7 +612,7 @@ def process_row(i, sensor_row, label_prefix="t"):
                 recommendation=recommendation,
                 callback=_on_high_ready
             )
-            if initial_insight and initial_insight != shap_reason:
+            if initial_insight:
                 high_row["AI_Insight"] = initial_insight
                 high_insight["insight"] = initial_insight
         else:
@@ -625,7 +627,7 @@ def process_row(i, sensor_row, label_prefix="t"):
                 "Confidence": f"{diagnosis['confidence']:.0%}",
                 "Prediction": "Failure" if diagnosis["prediction"] == 1 else "No failure",
                 "Reason": shap_reason,
-                "AI_Insight": shap_reason,
+                "AI_Insight": local_insight,
                 "_key": event_key,
             }
             st.session_state.low_conf_rows.append(low_row)
@@ -633,7 +635,7 @@ def process_row(i, sensor_row, label_prefix="t"):
             low_insight = {
                 "time": event_label,
                 "risk": "low",
-                "insight": shap_reason,
+                "insight": local_insight,
                 "_key": event_key,
             }
             st.session_state.ai_insights.append(low_insight)
@@ -648,7 +650,7 @@ def process_row(i, sensor_row, label_prefix="t"):
                 recommendation=recommendation,
                 callback=_on_low_ready
             )
-            if initial_insight and initial_insight != shap_reason:
+            if initial_insight:
                 low_row["AI_Insight"] = initial_insight
                 low_insight["insight"] = initial_insight
 
