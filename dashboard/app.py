@@ -14,6 +14,11 @@ import html
 import pandas as pd
 import streamlit as st
 from agents.orchestrator import run_pipeline
+from llm_reasoning import (
+    get_cached_insight,
+    trigger_async_llm_reasoning,
+    make_event_key
+)
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_PATH = os.path.join(PROJECT_ROOT, "data", "raw", "ai4i2020.csv")
@@ -323,6 +328,7 @@ if "total_scanned" not in st.session_state:
     st.session_state.pulse_history = []
     st.session_state.log_rows = []
     st.session_state.low_conf_rows = []
+    st.session_state.ai_insights = []
     st.session_state.last_csv_name = None
 
 # ---------------------------------------------------------------------------
@@ -422,22 +428,87 @@ def render_alert_table(rows, title, conf_class="danger"):
     """)
 
 
+def render_ai_insights(insights):
+    if not insights:
+        return
+    cards_html = "".join(f"""
+        <div class="status-panel {('danger' if item['risk'] == 'high' else 'watch')}" style="margin-bottom: 10px;">
+            <div class="status-head">
+                <span>EVENT {html.escape(str(item['time']))}</span>
+                <span class="status-tag {('danger' if item['risk'] == 'high' else 'watch')}">
+                    {('HIGH-RISK AI INSIGHT' if item['risk'] == 'high' else 'LOW-CONFIDENCE AI INSIGHT')}
+                </span>
+            </div>
+            <div class="status-body" style="font-size: 0.9rem;">
+                {html.escape(item['insight'])}
+            </div>
+        </div>
+    """ for item in insights)
+
+    md(f"""
+    <div style="margin-top:18px; margin-bottom:8px; font-weight:600; font-size:1.05rem;">🤖 AI Maintenance Insights</div>
+    <div>
+        {cards_html}
+    </div>
+    """)
+
+
+def sync_cached_insights():
+    """
+    Updates session state log rows, low-confidence rows, and ai_insights
+    with any completed Gemini insights from the background cache.
+    """
+    for r in st.session_state.log_rows:
+        key = r.get("_key")
+        if key:
+            cached = get_cached_insight(key)
+            if cached:
+                r["AI_Insight"] = cached
+
+    for r in st.session_state.low_conf_rows:
+        key = r.get("_key")
+        if key:
+            cached = get_cached_insight(key)
+            if cached:
+                r["AI_Insight"] = cached
+
+    for item in st.session_state.ai_insights:
+        key = item.get("_key")
+        if key:
+            cached = get_cached_insight(key)
+            if cached:
+                item["insight"] = cached
+
+
 def render_results():
     """
     Renders BOTH result tables and their download buttons together, always
     reading from session_state so they persist across reruns (e.g. after a
     download button click) until a new run explicitly resets the state.
     """
+    sync_cached_insights()
+
     log_rows = st.session_state.log_rows
     low_conf_rows = st.session_state.low_conf_rows
+    ai_insights = st.session_state.ai_insights
 
-    if not log_rows and not low_conf_rows:
+    if not log_rows and not low_conf_rows and not ai_insights:
         return
 
     with results_placeholder:
         if log_rows:
             render_alert_table(log_rows, "High-risk events", conf_class="danger")
-            high_df = pd.DataFrame(log_rows)
+            high_export = [
+                {
+                    "Time": r["Time"],
+                    "Confidence": r["Confidence"],
+                    "Action": r.get("Action", ""),
+                    "Reason": r["Reason"],
+                    "AI_Insight": r.get("AI_Insight", r["Reason"])
+                }
+                for r in log_rows
+            ]
+            high_df = pd.DataFrame(high_export)
             st.download_button(
                 "⬇ Download high-risk alerts (CSV)",
                 data=high_df.to_csv(index=False).encode("utf-8"),
@@ -449,7 +520,17 @@ def render_results():
 
         if low_conf_rows:
             render_alert_table(low_conf_rows, "Low-confidence anomalies", conf_class="watch")
-            low_df = pd.DataFrame(low_conf_rows)
+            low_export = [
+                {
+                    "Time": r["Time"],
+                    "Confidence": r["Confidence"],
+                    "Prediction": r.get("Prediction", ""),
+                    "Reason": r["Reason"],
+                    "AI_Insight": r.get("AI_Insight", r["Reason"])
+                }
+                for r in low_conf_rows
+            ]
+            low_df = pd.DataFrame(low_export)
             st.download_button(
                 "⬇ Download low-confidence anomalies (CSV)",
                 data=low_df.to_csv(index=False).encode("utf-8"),
@@ -458,6 +539,9 @@ def render_results():
                 use_container_width=True,
                 key="dl_low"
             )
+
+        if ai_insights:
+            render_ai_insights(ai_insights)
 
 
 def row_to_dict(row: pd.Series) -> dict:
@@ -486,6 +570,9 @@ def process_row(i, sensor_row, label_prefix="t"):
         recommendation = result["recommendation"]
         conf_pct = diagnosis["confidence"] * 100
         bar_height = max(15, min(100, conf_pct))
+        shap_reason = diagnosis.get("plain_explanation") or diagnosis.get("explanation", "")
+        event_label = f"{label_prefix}={i}"
+        event_key = make_event_key(event_label, diagnosis, recommendation)
 
         if diagnosis["confidence"] >= 0.70 and diagnosis["prediction"] == 1:
             st.session_state.total_high_confidence += 1
@@ -493,27 +580,79 @@ def process_row(i, sensor_row, label_prefix="t"):
             render_status(
                 "danger", f"{conf_pct:.0f}% CONFIDENCE",
                 f"[{label_prefix}={i}] {recommendation['action']}",
-                why=diagnosis["explanation"],
+                why=shap_reason,
             )
-            st.session_state.log_rows.append({
+            high_row = {
                 "Time": i,
                 "Confidence": f"{diagnosis['confidence']:.0%}",
                 "Action": recommendation["action"],
-                "Reason": diagnosis["explanation"],
-            })
+                "Reason": shap_reason,
+                "AI_Insight": shap_reason,
+                "_key": event_key,
+            }
+            st.session_state.log_rows.append(high_row)
+
+            high_insight = {
+                "time": event_label,
+                "risk": "high",
+                "insight": shap_reason,
+                "_key": event_key,
+            }
+            st.session_state.ai_insights.append(high_insight)
+
+            def _on_high_ready(eid, ekey, text):
+                high_row["AI_Insight"] = text
+                high_insight["insight"] = text
+
+            initial_insight = trigger_async_llm_reasoning(
+                event_id=event_label,
+                diagnosis=diagnosis,
+                recommendation=recommendation,
+                callback=_on_high_ready
+            )
+            if initial_insight and initial_insight != shap_reason:
+                high_row["AI_Insight"] = initial_insight
+                high_insight["insight"] = initial_insight
         else:
             st.session_state.pulse_history.append((COLORS["watch"], bar_height))
             render_status(
                 "watch", f"{conf_pct:.0f}% CONFIDENCE",
                 f"[{label_prefix}={i}] Anomaly flagged — confidence too low to act on.",
+                why=shap_reason,
             )
-            st.session_state.low_conf_rows.append({
+            low_row = {
                 "Time": i,
                 "Confidence": f"{diagnosis['confidence']:.0%}",
                 "Prediction": "Failure" if diagnosis["prediction"] == 1 else "No failure",
-                "Reason": diagnosis["explanation"],
-            })
+                "Reason": shap_reason,
+                "AI_Insight": shap_reason,
+                "_key": event_key,
+            }
+            st.session_state.low_conf_rows.append(low_row)
 
+            low_insight = {
+                "time": event_label,
+                "risk": "low",
+                "insight": shap_reason,
+                "_key": event_key,
+            }
+            st.session_state.ai_insights.append(low_insight)
+
+            def _on_low_ready(eid, ekey, text):
+                low_row["AI_Insight"] = text
+                low_insight["insight"] = text
+
+            initial_insight = trigger_async_llm_reasoning(
+                event_id=event_label,
+                diagnosis=diagnosis,
+                recommendation=recommendation,
+                callback=_on_low_ready
+            )
+            if initial_insight and initial_insight != shap_reason:
+                low_row["AI_Insight"] = initial_insight
+                low_insight["insight"] = initial_insight
+
+    sync_cached_insights()
     render_strip()
     render_dials()
 
@@ -531,6 +670,7 @@ if start_button:
     st.session_state.pulse_history = []
     st.session_state.log_rows = []
     st.session_state.low_conf_rows = []
+    st.session_state.ai_insights = []
 
     df = pd.read_csv(DATA_PATH).head(max_rows)
     for i, row in df.iterrows():
@@ -559,6 +699,7 @@ if uploaded_file is not None and uploaded_file.name != st.session_state.last_csv
             st.session_state.pulse_history = []
             st.session_state.log_rows = []
             st.session_state.low_conf_rows = []
+            st.session_state.ai_insights = []
             st.session_state.last_csv_name = uploaded_file.name
 
             st.success(f"Loaded {len(uploaded_df)} rows. Running through the pipeline...")

@@ -36,5 +36,6 @@ def diagnosis_agent(row: dict) -> dict:
     return {
         "prediction": prediction,
         "confidence": round(float(probability), 2),
-        "explanation": explanation
+        "explanation": explanation,
+        "plain_explanation": explanation
     }

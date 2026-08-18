@@ -7,8 +7,5 @@ streamlit
 matplotlib
 seaborn
 langgraph
-shap
 imbalanced-learn
-xgboost 
-matplotlib
-
+anthropic
