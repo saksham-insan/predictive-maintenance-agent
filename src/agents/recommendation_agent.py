@@ -12,9 +12,15 @@ def recommendation_agent(diagnosis: dict) -> dict:
         action = "No action needed"
         urgency = "Low"
 
-    return {
+    plain_explanation = diagnosis.get("plain_explanation", diagnosis.get("explanation", ""))
+
+    recommendation = {
         "action": action,
         "urgency": urgency,
         "confidence": diagnosis["confidence"],
-        "explanation": diagnosis["explanation"]
+        "explanation": diagnosis.get("explanation", ""),
+        "plain_explanation": plain_explanation
     }
+    diagnosis["plain_explanation"] = plain_explanation
+
+    return recommendation

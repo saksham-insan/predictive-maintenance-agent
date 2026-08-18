@@ -52,7 +52,7 @@ def simulate_stream(data_path: str = DATA_PATH, delay_seconds: float = 0.5,
             print(f"\n{timestamp} ⚠ ANOMALY DETECTED")
             print(f"  Prediction: {'FAILURE RISK' if diagnosis['prediction'] == 1 else 'No failure predicted'}")
             print(f"  Confidence: {diagnosis['confidence']:.0%}")
-            print(f"  Why: {diagnosis['explanation']}")
+            print(f"  Why: {diagnosis.get('plain_explanation', diagnosis['explanation'])}")
             print(f"  Recommended action: {recommendation['action']} (Urgency: {recommendation['urgency']})\n")
 
         time.sleep(delay_seconds)
