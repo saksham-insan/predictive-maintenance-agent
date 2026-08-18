@@ -1,4 +1,7 @@
-def recommendation_agent(diagnosis: dict) -> dict:
+from llm_reasoning import trigger_async_llm_reasoning
+
+
+def recommendation_agent(diagnosis: dict, event_id: str = "event") -> dict:
     """
     Converts a diagnosis into a maintenance recommendation.
     """
@@ -12,15 +15,20 @@ def recommendation_agent(diagnosis: dict) -> dict:
         action = "No action needed"
         urgency = "Low"
 
-    plain_explanation = diagnosis.get("plain_explanation", diagnosis.get("explanation", ""))
-
     recommendation = {
         "action": action,
         "urgency": urgency,
         "confidence": diagnosis["confidence"],
         "explanation": diagnosis.get("explanation", ""),
-        "plain_explanation": plain_explanation
     }
+
+    # Actually call the LLM reasoning module now
+    plain_explanation = trigger_async_llm_reasoning(
+        event_id=event_id,
+        diagnosis=diagnosis,
+        recommendation=recommendation
+    )
+    recommendation["plain_explanation"] = plain_explanation
     diagnosis["plain_explanation"] = plain_explanation
 
     return recommendation

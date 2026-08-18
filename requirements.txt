@@ -9,3 +9,4 @@ seaborn
 langgraph
 imbalanced-learn
 anthropic
+pytest

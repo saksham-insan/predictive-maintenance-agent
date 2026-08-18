@@ -8,9 +8,18 @@ Includes:
 - Non-blocking asynchronous execution via background thread pool.
 - Event-based caching and deduplication to prevent duplicate API requests.
 - Strict timeout handling and fallback to technical SHAP explanation on failure.
+
+FIX: The Gemini client (and its underlying gRPC/httpx internals) must be
+created INSIDE the worker thread that uses it, not created in the main
+thread and reused across threads -- doing the latter caused every call to
+hang silently until the timeout fired, even with a valid key and working
+quota. Each worker thread pool also gets its own initialized asyncio event
+loop via `initializer=`, since the underlying SDK expects one to exist on
+the thread it's running on.
 """
 
 import os
+import asyncio
 import threading
 import concurrent.futures
 from typing import Optional, Callable
@@ -27,7 +36,21 @@ except ImportError:
 _AI_INSIGHTS_CACHE: dict[str, str] = {}
 _IN_FLIGHT_KEYS: set[str] = set()
 _CACHE_LOCK = threading.Lock()
-_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="gemini_reasoning")
+
+
+def _thread_init():
+    """
+    Gives each worker thread its own asyncio event loop. The google-genai
+    SDK relies on one being present on the current thread; worker threads
+    spawned by ThreadPoolExecutor don't have one by default, which was
+    causing calls to hang silently until the timeout killed them.
+    """
+    asyncio.set_event_loop(asyncio.new_event_loop())
+
+
+_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+    max_workers=4, thread_name_prefix="gemini_reasoning", initializer=_thread_init
+)
 
 # Session-level quota tracking
 _QUOTA_EXHAUSTED: bool = False
@@ -51,6 +74,9 @@ def get_client():
     """
     Returns a Gemini client if the Google GenAI library is installed
     and GEMINI_API_KEY is available.
+
+    IMPORTANT: call this fresh on whichever thread will actually use the
+    client -- do not create it once and share it across threads.
     """
     if _QUOTA_EXHAUSTED:
         return None
@@ -91,7 +117,9 @@ def get_cached_insight(event_key: str) -> Optional[str]:
         return _AI_INSIGHTS_CACHE.get(event_key)
 
 
-_CALL_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="gemini_api_call")
+_CALL_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+    max_workers=4, thread_name_prefix="gemini_api_call", initializer=_thread_init
+)
 
 
 def _handle_api_exception(exc: Exception) -> bool:
@@ -133,12 +161,11 @@ def get_llm_reasoning(
     # Existing technical explanation as fallback
     fallback_text = diagnosis.get("plain_explanation") or diagnosis.get("explanation", "")
 
-    # Fast short-circuit if quota is exhausted
+    # Fast short-circuit if quota is exhausted or no key configured at all --
+    # avoids even submitting to the thread pool if we already know it'll fail
     if _QUOTA_EXHAUSTED:
         return fallback_text
-
-    client = get_client()
-    if client is None:
+    if not os.environ.get("GEMINI_API_KEY") or genai is None:
         return fallback_text
 
     # Recommendation
@@ -193,7 +220,14 @@ Respond with ONLY one concise sentence.
 """
 
     def _call_api() -> str:
-        response = client.models.generate_content(
+        # FIX: create the client fresh, INSIDE this worker thread, instead
+        # of reusing one created on the main thread. Reusing a client
+        # across threads was causing the call to hang until timeout.
+        thread_client = get_client()
+        if thread_client is None:
+            return fallback_text
+
+        response = thread_client.models.generate_content(
             model="gemini-3.6-flash",
             contents=prompt
         )
