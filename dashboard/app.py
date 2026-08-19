@@ -7,12 +7,20 @@ passes through the agent pipeline (monitoring -> diagnosis -> recommendation).
 
 import sys
 import os
-sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'src'))
+
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+sys.path.append(PROJECT_ROOT)
+sys.path.append(os.path.join(PROJECT_ROOT, 'src'))
 
 import time
 import html
+from datetime import datetime
 import pandas as pd
 import streamlit as st
+from src.database import SessionLocal
+from src.database_models import Run, HighRiskAlert, LowConfidenceAnomaly
+from src.user_service import authenticate_user
 from agents.orchestrator import run_pipeline
 from llm_reasoning import trigger_async_llm_reasoning, get_cached_insight, make_event_key
 
@@ -30,6 +38,32 @@ def md(content: str, target=None):
     sink.markdown(cleaned, unsafe_allow_html=True)
 
 st.set_page_config(page_title="Predictive Maintenance — Telemetry", layout="wide")
+if "authenticated" not in st.session_state:
+    st.session_state.authenticated = False
+if not st.session_state.authenticated:
+    st.title("Predictive Maintenance Login")
+
+    username = st.text_input("Username")
+    password = st.text_input("Password", type="password")
+
+    if st.button("Login"):
+        db = SessionLocal()
+
+        try:
+            user = authenticate_user(db, username, password)
+
+            if user:
+                st.session_state.authenticated = True
+                st.session_state.user_id = user.user_id
+                st.session_state.username = user.username
+                st.rerun()
+            else:
+                st.error("Invalid username or password.")
+
+        finally:
+            db.close()
+
+    st.stop()
 
 # ---------------------------------------------------------------------------
 # Design tokens
@@ -513,9 +547,105 @@ def row_to_dict(row: pd.Series) -> dict:
         "Torque [Nm]": row["Torque [Nm]"],
         "Tool wear [min]": row["Tool wear [min]"]
     }
+def create_database_run(user_id, run_type, source_filename=None):
+    """Create a PostgreSQL record for one prediction run."""
+    db = SessionLocal()
+
+    try:
+        run = Run(
+            user_id=user_id,
+            run_type=run_type,
+            source_filename=source_filename,
+            threshold_used=0.4,
+            contamination_used=0.15,
+        )
+
+        db.add(run)
+        db.commit()
+        db.refresh(run)
+
+        return run.run_id
+
+    finally:
+        db.close()
+def update_database_run(
+    run_id,
+    total_scanned,
+    total_anomalies,
+    total_high_confidence,
+):
+    """Update PostgreSQL with the final results of a prediction run."""
+    db = SessionLocal()
+
+    try:
+        run = db.query(Run).filter(Run.run_id == run_id).first()
+
+        if run is None:
+            raise ValueError(f"Run {run_id} not found")
+
+        run.total_scanned = total_scanned
+        run.total_anomalies = total_anomalies
+        run.total_high_confidence = total_high_confidence
+
+        db.commit()
+
+    finally:
+        db.close()
+def save_high_risk_alert(
+    run_id,
+    confidence,
+    action,
+    reason,
+):
+    """Save one high-risk alert to PostgreSQL."""
+    db = SessionLocal()
+
+    try:
+        alert = HighRiskAlert(
+            run_id=run_id,
+            row_time=datetime.now(),
+            confidence=confidence,
+            action=action,
+            reason=reason,
+        )
+
+        db.add(alert)
+        db.commit()
+        db.refresh(alert)
+
+        return alert.alert_id
+
+    finally:
+        db.close()
+def save_low_confidence_anomaly(
+    run_id,
+    confidence,
+    prediction,
+    reason,
+):
+    """Save one low-confidence anomaly to PostgreSQL."""
+    db = SessionLocal()
+
+    try:
+        anomaly = LowConfidenceAnomaly(
+            run_id=run_id,
+            row_time=datetime.now(),
+            confidence=confidence,
+            prediction=prediction,
+            reason=reason,
+        )
+
+        db.add(anomaly)
+        db.commit()
+        db.refresh(anomaly)
+
+        return anomaly.anomaly_id
+
+    finally:
+        db.close()
 
 
-def process_row(i, sensor_row, label_prefix="t"):
+def process_row(i, sensor_row, label_prefix="t", run_id=None):
     """
     Runs one row through the pipeline, updates counters/history, appends
     to session_state result lists (with an AI_Insight field), triggers the
@@ -554,6 +684,13 @@ def process_row(i, sensor_row, label_prefix="t"):
                 "_key": event_key,
             }
             st.session_state.log_rows.append(high_row)
+            if run_id is not None:
+                save_high_risk_alert(
+                    run_id=run_id,
+                    confidence=diagnosis["confidence"],
+                    action=recommendation["action"],
+                    reason=shap_reason,
+                )
 
             def _on_high_ready(eid, ekey, text):
                 high_row["AI_Insight"] = text
@@ -583,6 +720,14 @@ def process_row(i, sensor_row, label_prefix="t"):
             }
             st.session_state.low_conf_rows.append(low_row)
 
+            if run_id is not None:
+                save_low_confidence_anomaly(
+                    run_id=run_id,
+                    confidence=diagnosis["confidence"],
+                    prediction=diagnosis["prediction"],
+                    reason=shap_reason,
+                )
+
             def _on_low_ready(eid, ekey, text):
                 low_row["AI_Insight"] = text
 
@@ -598,8 +743,8 @@ def process_row(i, sensor_row, label_prefix="t"):
             if initial_insight and initial_insight != shap_reason:
                 low_row["AI_Insight"] = initial_insight
 
-    render_strip()
-    render_dials()
+render_strip()
+render_dials()
 
 
 render_strip()
@@ -609,6 +754,10 @@ render_dials()
 # Simulation loop — starting a NEW run resets session_state result lists
 # ---------------------------------------------------------------------------
 if start_button:
+    run_id = create_database_run(
+        st.session_state.user_id,
+        "simulation",
+    )    
     st.session_state.total_scanned = 0
     st.session_state.total_anomalies = 0
     st.session_state.total_high_confidence = 0
@@ -618,8 +767,14 @@ if start_button:
 
     df = pd.read_csv(DATA_PATH).head(max_rows)
     for i, row in df.iterrows():
-        process_row(i, row_to_dict(row), label_prefix="t")
+        process_row(i, row_to_dict(row), label_prefix="t", run_id=run_id)
         time.sleep(delay)
+    update_database_run(
+    run_id,
+    st.session_state.total_scanned,
+    st.session_state.total_anomalies,
+    st.session_state.total_high_confidence,
+)
 
     sync_cached_insights()
     st.success("Simulation complete.")
@@ -644,9 +799,29 @@ if uploaded_file is not None and uploaded_file.name != st.session_state.last_csv
             st.session_state.low_conf_rows = []
             st.session_state.last_csv_name = uploaded_file.name
 
+            run_id = create_database_run(
+                st.session_state.user_id,
+                "csv_upload",
+                uploaded_file.name,
+            )
+
             st.success(f"Loaded {len(uploaded_df)} rows. Running through the pipeline...")
+
             for i, row in uploaded_df.iterrows():
-                process_row(i, row_to_dict(row), label_prefix="row")
+                process_row(
+                    i,
+                    row_to_dict(row),
+                    label_prefix="row",
+                    run_id=run_id,
+                )
+
+            update_database_run(
+                run_id,
+                st.session_state.total_scanned,
+                st.session_state.total_anomalies,
+                st.session_state.total_high_confidence,
+            )
+
             sync_cached_insights()
     except Exception as e:
         st.error(f"Couldn't process the file: {e}")
