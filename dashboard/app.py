@@ -22,7 +22,14 @@ from src.database import SessionLocal
 from src.database_models import Run, HighRiskAlert, LowConfidenceAnomaly
 from src.user_service import authenticate_user
 from agents.orchestrator import run_pipeline
-from llm_reasoning import trigger_async_llm_reasoning, get_cached_insight, make_event_key
+from agents.notification_agent import notification_agent, get_last_notification_status
+from llm_reasoning import (
+    get_cached_insight,
+    trigger_async_llm_reasoning,
+    make_event_key,
+    generate_local_insight
+)
+
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_PATH = os.path.join(PROJECT_ROOT, "data", "raw", "ai4i2020.csv")
@@ -343,6 +350,22 @@ st.sidebar.markdown(f"""
 <span style="color:{COLORS['danger']}">●</span> High-risk, high confidence
 </div>
 """, unsafe_allow_html=True)
+
+# Notification Agent Status
+last_notif = get_last_notification_status()
+if last_notif:
+    st.sidebar.markdown("---")
+    st.sidebar.markdown('<div class="side-label">Notifications</div>', unsafe_allow_html=True)
+    status_val = str(last_notif.get('status', 'unknown')).upper()
+    status_color = COLORS['ok'] if last_notif.get('status') == 'sent' else (COLORS['watch'] if last_notif.get('status') in ['skipped', 'dispatched_async'] else COLORS['danger'])
+    st.sidebar.markdown(f"""
+    <div style="font-size:0.80rem; line-height:1.6; color:{COLORS['text_dim']}">
+    <b style="color:{COLORS['text']}">Last Alert:</b> {html.escape(str(last_notif.get('machine_id', 'N/A')))} ({html.escape(str(last_notif.get('timestamp', 'N/A')))})<br>
+    <b style="color:{COLORS['text']}">Recipient:</b> {html.escape(str(last_notif.get('recipient', 'N/A')))}<br>
+    <b style="color:{COLORS['text']}">Status:</b> <span style="color:{status_color}; font-weight:600;">{html.escape(status_val)}</span>
+    </div>
+    """, unsafe_allow_html=True)
+
 
 # ---------------------------------------------------------------------------
 # Session state
@@ -732,7 +755,22 @@ def process_row(i, sensor_row, label_prefix="t", run_id=None):
             )
             if initial_insight and initial_insight != shap_reason:
                 high_row["AI_Insight"] = initial_insight
+                high_insight["insight"] = initial_insight
+
+            # Notification Agent for HIGH-RISK alerts (asynchronous, non-blocking, safe)
+            try:
+                notification_agent({
+                    "machine_id": f"Machine-{sensor_row.get('Type', '001')}",
+                    "timestamp": event_label,
+                    "diagnosis": diagnosis,
+                    "recommendation": recommendation,
+                    "ai_insight": high_row.get("AI_Insight", local_insight),
+                    "sensor_data": sensor_row
+                }, async_send=True)
+            except Exception as notify_err:
+                print(f"[WARN] Notification error in dashboard: {notify_err}")
         else:
+
             st.session_state.pulse_history.append((COLORS["watch"], bar_height))
             render_status(
                 "watch", f"{conf_pct:.0f}% CONFIDENCE",

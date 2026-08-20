@@ -16,6 +16,8 @@ if hasattr(sys.stdout, "reconfigure"):
 
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'src'))
 from agents.orchestrator import run_pipeline
+from agents.notification_agent import notification_agent
+from llm_reasoning import generate_local_insight
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_PATH = os.path.join(PROJECT_ROOT, "data", "raw", "ai4i2020.csv")
@@ -57,8 +59,23 @@ def simulate_stream(data_path: str = DATA_PATH, delay_seconds: float = 0.5,
             print(f"  Confidence: {diagnosis['confidence']:.0%}")
             print(f"  Why: {diagnosis.get('plain_explanation', diagnosis['explanation'])}")
             print(f"  Recommended action: {recommendation['action']} (Urgency: {recommendation['urgency']})\n")
+            
+            # Notification Agent check for HIGH-RISK alerts (non-blocking, safe)
+            try:
+                ai_insight = generate_local_insight(diagnosis, recommendation)
+                notification_agent({
+                    "machine_id": f"Machine-{sensor_row.get('Type', '001')}",
+                    "timestamp": f"t={i}",
+                    "diagnosis": diagnosis,
+                    "recommendation": recommendation,
+                    "ai_insight": ai_insight,
+                    "sensor_data": sensor_row
+                }, async_send=True)
+            except Exception as notify_err:
+                print(f"[WARN] Notification error in stream simulation: {notify_err}")
 
         time.sleep(delay_seconds)
+
 
     print("[STREAM] Simulation complete.")
 
