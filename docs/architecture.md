@@ -3,14 +3,14 @@
 ## Flow
 1. Monitoring Agent — checks incoming sensor row for anomalies
 2. Diagnosis Agent — if anomalous, predicts failure probability + explains why (SHAP)
-3. Recommendation Agent — converts diagnosis into a maintenance action
+3. Recommendation Agent — converts diagnosis into a maintenance action and generates a plain-English explanation via LLM reasoning
 4. Orchestrator — runs the above in sequence for each incoming row
 
 ## Data flow
 sensor_row (dict) 
   → monitoring_agent(row) → is_anomaly (bool)
-  → diagnosis_agent(row) → {prediction, confidence, explanation}
-  → recommendation_agent(diagnosis) → {action, urgency}
+  → diagnosis_agent(row) → {prediction, confidence, explanation, plain_explanation}
+  → recommendation_agent(diagnosis) → {action, urgency, confidence, explanation, plain_explanation}
 
   ## Anomaly Detection Tuning
 Isolation Forest trained on raw sensor features + engineered interaction 

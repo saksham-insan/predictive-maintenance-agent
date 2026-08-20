@@ -14,6 +14,7 @@ import html
 import pandas as pd
 import streamlit as st
 from agents.orchestrator import run_pipeline
+from llm_reasoning import trigger_async_llm_reasoning, get_cached_insight, make_event_key
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_PATH = os.path.join(PROJECT_ROOT, "data", "raw", "ai4i2020.csv")
@@ -198,12 +199,12 @@ def inject_css():
 
     .log-row {{
         display: grid;
-        grid-template-columns: 70px 110px 1fr 2fr;
-        gap: 14px;
+        grid-template-columns: 60px 90px 1fr 1.3fr 1.3fr;
+        gap: 12px;
         align-items: center;
         padding: 10px 14px;
         border-bottom: 1px solid var(--hairline);
-        font-size: 0.85rem;
+        font-size: 0.83rem;
     }}
     .log-row:last-child {{ border-bottom: none; }}
     .log-row.head {{
@@ -218,6 +219,7 @@ def inject_css():
     .log-conf.watch {{ color: var(--watch); }}
     .log-action {{ color: var(--text); font-weight: 500; }}
     .log-reason {{ color: var(--text-dim); }}
+    .log-ai {{ color: var(--teal); }}
     .log-wrap {{
         background: var(--panel);
         border: 1px solid var(--hairline);
@@ -309,13 +311,6 @@ st.sidebar.markdown(f"""
 # ---------------------------------------------------------------------------
 # Session state
 # ---------------------------------------------------------------------------
-# log_rows / low_conf_rows live in session_state (not plain local variables)
-# so they SURVIVE a rerun. Streamlit reruns the whole script on every widget
-# interaction, including a download button click -- with plain local
-# variables, that rerun would skip the "if start_button:" block entirely
-# (start_button is False again) and the lists would vanish. Session state
-# persists across reruns, so the results stay visible until a NEW run
-# explicitly resets them.
 if "total_scanned" not in st.session_state:
     st.session_state.total_scanned = 0
     st.session_state.total_anomalies = 0
@@ -400,6 +395,11 @@ def render_status(kind, tag_text, body, why=None):
 
 
 def render_alert_table(rows, title, conf_class="danger"):
+    """
+    Renders a table with Time, Confidence, Action/Prediction, Reason (SHAP),
+    AND AI Insight as a column -- so the AI-generated text is shown inline
+    per row instead of a separate panel.
+    """
     if not rows:
         return
     rows_html = "".join(f"""
@@ -408,6 +408,7 @@ def render_alert_table(rows, title, conf_class="danger"):
             <div class="log-conf {conf_class if conf_class == 'watch' else ''}">{r['Confidence']}</div>
             <div class="log-action">{html.escape(r.get('Action') or r.get('Prediction', ''))}</div>
             <div class="log-reason">{html.escape(r['Reason'])}</div>
+            <div class="log-ai">{html.escape(r.get('AI_Insight', r['Reason']))}</div>
         </div>
     """ for r in rows)
 
@@ -415,19 +416,42 @@ def render_alert_table(rows, title, conf_class="danger"):
     <div style="margin-top:6px; margin-bottom:8px; font-weight:600; font-size:1.05rem;">{title}</div>
     <div class="log-wrap">
         <div class="log-row head">
-            <div>Time</div><div>Confidence</div><div>Action</div><div>Reason</div>
+            <div>Time</div><div>Confidence</div><div>Action</div><div>Reason</div><div>AI Insight</div>
         </div>
         {rows_html}
     </div>
     """)
 
 
+def sync_cached_insights():
+    """
+    Updates session state log rows and low-confidence rows with any
+    completed Gemini insights that have finished in the background.
+    """
+    for r in st.session_state.log_rows:
+        key = r.get("_key")
+        if key:
+            cached = get_cached_insight(key)
+            if cached:
+                r["AI_Insight"] = cached
+
+    for r in st.session_state.low_conf_rows:
+        key = r.get("_key")
+        if key:
+            cached = get_cached_insight(key)
+            if cached:
+                r["AI_Insight"] = cached
+
+
 def render_results():
     """
-    Renders BOTH result tables and their download buttons together, always
-    reading from session_state so they persist across reruns (e.g. after a
-    download button click) until a new run explicitly resets the state.
+    Renders BOTH result tables (each with an AI Insight column) and their
+    download buttons, always reading from session_state so they persist
+    across reruns (e.g. after a download button click) until a new run
+    explicitly resets the state.
     """
+    sync_cached_insights()
+
     log_rows = st.session_state.log_rows
     low_conf_rows = st.session_state.low_conf_rows
 
@@ -437,7 +461,17 @@ def render_results():
     with results_placeholder:
         if log_rows:
             render_alert_table(log_rows, "High-risk events", conf_class="danger")
-            high_df = pd.DataFrame(log_rows)
+            high_export = [
+                {
+                    "Time": r["Time"],
+                    "Confidence": r["Confidence"],
+                    "Action": r.get("Action", ""),
+                    "Reason": r["Reason"],
+                    "AI_Insight": r.get("AI_Insight", r["Reason"])
+                }
+                for r in log_rows
+            ]
+            high_df = pd.DataFrame(high_export)
             st.download_button(
                 "⬇ Download high-risk alerts (CSV)",
                 data=high_df.to_csv(index=False).encode("utf-8"),
@@ -449,7 +483,17 @@ def render_results():
 
         if low_conf_rows:
             render_alert_table(low_conf_rows, "Low-confidence anomalies", conf_class="watch")
-            low_df = pd.DataFrame(low_conf_rows)
+            low_export = [
+                {
+                    "Time": r["Time"],
+                    "Confidence": r["Confidence"],
+                    "Prediction": r.get("Prediction", ""),
+                    "Reason": r["Reason"],
+                    "AI_Insight": r.get("AI_Insight", r["Reason"])
+                }
+                for r in low_conf_rows
+            ]
+            low_df = pd.DataFrame(low_export)
             st.download_button(
                 "⬇ Download low-confidence anomalies (CSV)",
                 data=low_df.to_csv(index=False).encode("utf-8"),
@@ -472,8 +516,11 @@ def row_to_dict(row: pd.Series) -> dict:
 
 
 def process_row(i, sensor_row, label_prefix="t"):
-    """Runs one row through the pipeline, updates counters/history, appends
-    to session_state result lists, and renders the current status panel."""
+    """
+    Runs one row through the pipeline, updates counters/history, appends
+    to session_state result lists (with an AI_Insight field), triggers the
+    background LLM call, and renders the current status panel.
+    """
     result = run_pipeline(sensor_row)
     st.session_state.total_scanned += 1
 
@@ -486,6 +533,9 @@ def process_row(i, sensor_row, label_prefix="t"):
         recommendation = result["recommendation"]
         conf_pct = diagnosis["confidence"] * 100
         bar_height = max(15, min(100, conf_pct))
+        shap_reason = diagnosis.get("plain_explanation") or diagnosis.get("explanation", "")
+        event_label = f"{label_prefix}={i}"
+        event_key = make_event_key(event_label, diagnosis, recommendation)
 
         if diagnosis["confidence"] >= 0.70 and diagnosis["prediction"] == 1:
             st.session_state.total_high_confidence += 1
@@ -493,26 +543,60 @@ def process_row(i, sensor_row, label_prefix="t"):
             render_status(
                 "danger", f"{conf_pct:.0f}% CONFIDENCE",
                 f"[{label_prefix}={i}] {recommendation['action']}",
-                why=diagnosis["explanation"],
+                why=shap_reason,
             )
-            st.session_state.log_rows.append({
+            high_row = {
                 "Time": i,
                 "Confidence": f"{diagnosis['confidence']:.0%}",
                 "Action": recommendation["action"],
-                "Reason": diagnosis["explanation"],
-            })
+                "Reason": shap_reason,
+                "AI_Insight": shap_reason,
+                "_key": event_key,
+            }
+            st.session_state.log_rows.append(high_row)
+
+            def _on_high_ready(eid, ekey, text):
+                high_row["AI_Insight"] = text
+
+            initial_insight = trigger_async_llm_reasoning(
+                event_id=event_label,
+                diagnosis=diagnosis,
+                recommendation=recommendation,
+                callback=_on_high_ready
+            )
+            if initial_insight and initial_insight != shap_reason:
+                high_row["AI_Insight"] = initial_insight
         else:
             st.session_state.pulse_history.append((COLORS["watch"], bar_height))
             render_status(
                 "watch", f"{conf_pct:.0f}% CONFIDENCE",
                 f"[{label_prefix}={i}] Anomaly flagged — confidence too low to act on.",
+                why=shap_reason,
             )
-            st.session_state.low_conf_rows.append({
+            low_row = {
                 "Time": i,
                 "Confidence": f"{diagnosis['confidence']:.0%}",
                 "Prediction": "Failure" if diagnosis["prediction"] == 1 else "No failure",
-                "Reason": diagnosis["explanation"],
-            })
+                "Reason": shap_reason,
+                "AI_Insight": shap_reason,
+                "_key": event_key,
+            }
+            st.session_state.low_conf_rows.append(low_row)
+
+            def _on_low_ready(eid, ekey, text):
+                low_row["AI_Insight"] = text
+
+            # Only call the LLM for low-confidence rows if you want AI text
+            # there too. Comment this out if you'd rather save API quota
+            # and only get AI insights on high-risk rows.
+            initial_insight = trigger_async_llm_reasoning(
+                event_id=event_label,
+                diagnosis=diagnosis,
+                recommendation=recommendation,
+                callback=_on_low_ready
+            )
+            if initial_insight and initial_insight != shap_reason:
+                low_row["AI_Insight"] = initial_insight
 
     render_strip()
     render_dials()
@@ -537,12 +621,11 @@ if start_button:
         process_row(i, row_to_dict(row), label_prefix="t")
         time.sleep(delay)
 
+    sync_cached_insights()
     st.success("Simulation complete.")
 
 # ---------------------------------------------------------------------------
-# CSV Upload handling — only reprocess when a NEW file is uploaded, not on
-# every rerun (e.g. a download button click would otherwise re-run the
-# whole file through the pipeline again)
+# CSV Upload handling — only reprocess when a NEW file is uploaded
 # ---------------------------------------------------------------------------
 if uploaded_file is not None and uploaded_file.name != st.session_state.last_csv_name:
     required_cols = ["Type", "Air temperature [K]", "Process temperature [K]",
@@ -564,6 +647,7 @@ if uploaded_file is not None and uploaded_file.name != st.session_state.last_csv
             st.success(f"Loaded {len(uploaded_df)} rows. Running through the pipeline...")
             for i, row in uploaded_df.iterrows():
                 process_row(i, row_to_dict(row), label_prefix="row")
+            sync_cached_insights()
     except Exception as e:
         st.error(f"Couldn't process the file: {e}")
 
@@ -572,6 +656,7 @@ if uploaded_file is not None and uploaded_file.name != st.session_state.last_csv
 # ---------------------------------------------------------------------------
 if manual_row is not None:
     process_row("manual", manual_row, label_prefix="entry")
+    sync_cached_insights()
 
 # ---------------------------------------------------------------------------
 # Always render results (persists across reruns, e.g. after download click)
