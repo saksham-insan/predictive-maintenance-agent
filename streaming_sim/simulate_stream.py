@@ -11,6 +11,9 @@ import sys
 import time
 import pandas as pd
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'src'))
 from agents.orchestrator import run_pipeline
 
@@ -35,7 +38,7 @@ def simulate_stream(data_path: str = DATA_PATH, delay_seconds: float = 0.5,
     if max_rows:
         df = df.head(max_rows)
 
-    print(f"[STREAM] Starting simulation — {len(df)} rows, {delay_seconds}s delay between readings\n")
+    print(f"[STREAM] Starting simulation -- {len(df)} rows, {delay_seconds}s delay between readings\n")
 
     for i, row in df.iterrows():
         sensor_row = row_to_dict(row)
@@ -45,11 +48,11 @@ def simulate_stream(data_path: str = DATA_PATH, delay_seconds: float = 0.5,
 
         if result["status"] == "normal":
             if not only_show_anomalies:
-                print(f"{timestamp} Reading OK — no anomaly detected")
+                print(f"{timestamp} Reading OK -- no anomaly detected")
         else:
             diagnosis = result["diagnosis"]
             recommendation = result["recommendation"]
-            print(f"\n{timestamp} ⚠ ANOMALY DETECTED")
+            print(f"\n{timestamp} [!] ANOMALY DETECTED")
             print(f"  Prediction: {'FAILURE RISK' if diagnosis['prediction'] == 1 else 'No failure predicted'}")
             print(f"  Confidence: {diagnosis['confidence']:.0%}")
             print(f"  Why: {diagnosis['explanation']}")
@@ -61,4 +64,4 @@ def simulate_stream(data_path: str = DATA_PATH, delay_seconds: float = 0.5,
 
 
 if __name__ == "__main__":
-    simulate_stream(max_rows=30, delay_seconds=0.5, only_show_anomalies=False)
+    simulate_stream(max_rows=30, delay_seconds=0.1, only_show_anomalies=False)
