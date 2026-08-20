@@ -755,7 +755,7 @@ def process_row(i, sensor_row, label_prefix="t", run_id=None):
             )
             if initial_insight and initial_insight != shap_reason:
                 high_row["AI_Insight"] = initial_insight
-                high_insight["insight"] = initial_insight
+                
 
             # Notification Agent for HIGH-RISK alerts (asynchronous, non-blocking, safe)
             try:
@@ -764,7 +764,7 @@ def process_row(i, sensor_row, label_prefix="t", run_id=None):
                     "timestamp": event_label,
                     "diagnosis": diagnosis,
                     "recommendation": recommendation,
-                    "ai_insight": high_row.get("AI_Insight", local_insight),
+                    "ai_insight": high_row.get("AI_Insight", ""),
                     "sensor_data": sensor_row
                 }, async_send=True)
             except Exception as notify_err:
