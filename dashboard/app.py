@@ -26,6 +26,8 @@ from llm_reasoning import trigger_async_llm_reasoning, get_cached_insight, make_
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_PATH = os.path.join(PROJECT_ROOT, "data", "raw", "ai4i2020.csv")
+UPLOADED_CSV_DIR = os.path.join(PROJECT_ROOT, "data", "uploaded_runs")
+os.makedirs(UPLOADED_CSV_DIR, exist_ok=True)
 
 
 def md(content: str, target=None):
@@ -477,6 +479,21 @@ def sync_cached_insights():
                 r["AI_Insight"] = cached
 
 
+def get_user_prediction_runs(user_id):
+    """Fetch prediction runs belonging to the logged-in user."""
+    db = SessionLocal()
+
+    try:
+        return (
+            db.query(Run)
+            .filter(Run.user_id == user_id)
+            .order_by(Run.created_at.desc())
+            .all()
+        )
+    finally:
+        db.close()
+
+
 def render_results():
     """
     Renders BOTH result tables (each with an AI Insight column) and their
@@ -547,6 +564,18 @@ def row_to_dict(row: pd.Series) -> dict:
         "Torque [Nm]": row["Torque [Nm]"],
         "Tool wear [min]": row["Tool wear [min]"]
     }
+def get_uploaded_csv_path(user_id, run_id, source_filename):
+    """Return the stored CSV path for a previous CSV-upload run."""
+    if not source_filename:
+        return None
+
+    safe_name = os.path.basename(source_filename)
+    return os.path.join(
+        UPLOADED_CSV_DIR,
+        f"user_{user_id}_run_{run_id}_{safe_name}",
+    )
+
+
 def create_database_run(user_id, run_type, source_filename=None):
     """Create a PostgreSQL record for one prediction run."""
     db = SessionLocal()
@@ -746,10 +775,6 @@ def process_row(i, sensor_row, label_prefix="t", run_id=None):
 render_strip()
 render_dials()
 
-
-render_strip()
-render_dials()
-
 # ---------------------------------------------------------------------------
 # Simulation loop — starting a NEW run resets session_state result lists
 # ---------------------------------------------------------------------------
@@ -805,6 +830,14 @@ if uploaded_file is not None and uploaded_file.name != st.session_state.last_csv
                 uploaded_file.name,
             )
 
+            stored_csv_path = get_uploaded_csv_path(
+                st.session_state.user_id,
+                run_id,
+                uploaded_file.name,
+            )
+            with open(stored_csv_path, "wb") as f:
+                f.write(uploaded_file.getvalue())
+
             st.success(f"Loaded {len(uploaded_df)} rows. Running through the pipeline...")
 
             for i, row in uploaded_df.iterrows():
@@ -837,3 +870,51 @@ if manual_row is not None:
 # Always render results (persists across reruns, e.g. after download click)
 # ---------------------------------------------------------------------------
 render_results()
+
+st.markdown("---")
+st.subheader("Prediction History")
+
+runs = get_user_prediction_runs(st.session_state.user_id)
+
+if runs:
+    history_data = []
+
+    for run in runs:
+        history_data.append({
+            "Run ID": run.run_id,
+            "Type": run.run_type,
+            "Source": run.source_filename or "-",
+            "Scanned": run.total_scanned,
+            "Anomalies": run.total_anomalies,
+            "High Risk": run.total_high_confidence,
+            "Created At": run.created_at,
+        })
+
+    st.dataframe(history_data, use_container_width=True)
+
+    # Download is shown only for runs that came from a CSV upload.
+    for run in runs:
+        if run.run_type != "csv_upload":
+            continue
+
+        csv_path = get_uploaded_csv_path(
+            st.session_state.user_id,
+            run.run_id,
+            run.source_filename,
+        )
+
+        if csv_path and os.path.exists(csv_path):
+            with open(csv_path, "rb") as f:
+                csv_data = f.read()
+
+            st.download_button(
+                f"⬇ Download CSV — Run {run.run_id} ({run.source_filename})",
+                data=csv_data,
+                file_name=run.source_filename or f"run_{run.run_id}.csv",
+                mime="text/csv",
+                key=f"download_history_csv_{run.run_id}",
+                use_container_width=True,
+            )
+else:
+    st.info("No prediction runs found.")
+
