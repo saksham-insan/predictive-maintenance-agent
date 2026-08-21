@@ -455,9 +455,8 @@ def render_status(kind, tag_text, body, why=None):
 
 def render_alert_table(rows, title, conf_class="danger"):
     """
-    Renders a table with Time, Confidence, Action/Prediction, Reason (SHAP),
-    AND AI Insight as a column -- so the AI-generated text is shown inline
-    per row instead of a separate panel.
+    Renders a result table with Time, Confidence, Action/Prediction,
+    Failure Type, and Smart AI Reasoning.
     """
     if not rows:
         return
@@ -475,7 +474,7 @@ def render_alert_table(rows, title, conf_class="danger"):
     <div style="margin-top:6px; margin-bottom:8px; font-weight:600; font-size:1.05rem;">{title}</div>
     <div class="log-wrap">
         <div class="log-row head">
-            <div>Time</div><div>Confidence</div><div>Action</div><div>Reason</div><div>AI Insight</div>
+            <div>Time</div><div>Confidence</div><div>Action</div><div>Failure Type</div><div>Smart AI Reasoning</div>
         </div>
         {rows_html}
     </div>
@@ -534,14 +533,14 @@ def render_results():
 
     with results_placeholder:
         if log_rows:
-            render_alert_table(log_rows, "High-risk events", conf_class="danger")
+            render_alert_table(log_rows, "High-risk anomalies", conf_class="danger")
             high_export = [
                 {
                     "Time": r["Time"],
                     "Confidence": r["Confidence"],
                     "Action": r.get("Action", ""),
-                    "Reason": r["Reason"],
-                    "AI_Insight": r.get("AI_Insight", r["Reason"])
+                    "Failure Type": r["Reason"],
+                    "Smart AI Reasoning": r.get("AI_Insight", r["Reason"])
                 }
                 for r in log_rows
             ]
@@ -561,9 +560,9 @@ def render_results():
                 {
                     "Time": r["Time"],
                     "Confidence": r["Confidence"],
-                    "Prediction": r.get("Prediction", ""),
-                    "Reason": r["Reason"],
-                    "AI_Insight": r.get("AI_Insight", r["Reason"])
+                    "Action": r.get("Action", ""),
+                    "Failure Type": r["Reason"],
+                    "Smart AI Reasoning": r.get("AI_Insight", r["Reason"])
                 }
                 for r in low_conf_rows
             ]
@@ -772,6 +771,12 @@ def process_row(i, sensor_row, label_prefix="t", run_id=None):
         else:
 
             st.session_state.pulse_history.append((COLORS["watch"], bar_height))
+            if conf_pct < 30:
+                maintenance_action = "No maintenance required"
+            elif conf_pct <= 70:
+                maintenance_action = "Schedule immediate maintenance within one week"
+            else:
+                maintenance_action = "Schedule immediate maintenance"
             render_status(
                 "watch", f"{conf_pct:.0f}% CONFIDENCE",
                 f"[{label_prefix}={i}] Anomaly flagged — confidence too low to act on.",
@@ -780,6 +785,7 @@ def process_row(i, sensor_row, label_prefix="t", run_id=None):
             low_row = {
                 "Time": i,
                 "Confidence": f"{diagnosis['confidence']:.0%}",
+                "Action": maintenance_action,
                 "Prediction": "Failure" if diagnosis["prediction"] == 1 else "No failure",
                 "Reason": shap_reason,
                 "AI_Insight": shap_reason,

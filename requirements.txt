@@ -9,3 +9,6 @@ seaborn
 langgraph
 imbalanced-learn
 anthropic
+sqlalchemy
+psycopg2-binary
+python-dotenv
