@@ -79,3 +79,8 @@ of both, across contamination levels 0.05-0.25:
 
 Kept Isolation Forest alone — the ensemble's recall gain didn't justify
 nearly doubling the false-alarm rate.
+## Feature Importance
+Random Forest's built-in feature importance confirms our SHAP explanations:
+Power (24.5%), Rotational Speed (19.7%), and Torque (19.2%) are the top three
+drivers of failure predictions — consistent across two independent
+explainability methods (global importance and per-row SHAP).
